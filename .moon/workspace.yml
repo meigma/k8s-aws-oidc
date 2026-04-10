@@ -1,0 +1,13 @@
+# https://moonrepo.dev/docs/config/workspace
+$schema: 'https://moonrepo.dev/schemas/workspace.json'
+
+# Single-package repo: register the root as the only project. The combined
+# globs+sources form is what moon recommends; we use sources only because
+# there's nothing to discover via globs.
+projects:
+  sources:
+    root: '.'
+
+vcs:
+  client: 'git'
+  defaultBranch: 'main'

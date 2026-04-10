@@ -1,0 +1,50 @@
+# https://moonrepo.dev/docs/config/project
+$schema: 'https://moonrepo.dev/schemas/project.json'
+
+language: 'go'
+layer: 'application'
+
+# Root-level project: do not inherit anything implicit; declare every task
+# input explicitly so cache hashes are predictable.
+workspace:
+  inheritedTasks:
+    include: []
+
+tasks:
+  build:
+    command: 'go build ./...'
+    inputs:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+    options:
+      cache: true
+
+  test:
+    command: 'go test ./... -race -shuffle=on -count=1'
+    inputs:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+    options:
+      cache: true
+
+  vet:
+    command: 'go vet ./...'
+    inputs:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+    options:
+      cache: true
+
+  lint:
+    command: 'golangci-lint run ./...'
+    inputs:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.golangci.yml'
+    toolchain: 'system'
+    options:
+      cache: true
