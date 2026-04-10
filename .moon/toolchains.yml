@@ -1,0 +1,14 @@
+# https://moonrepo.dev/docs/config/toolchain
+$schema: 'https://moonrepo.dev/schemas/toolchain.json'
+
+# Pin proto so local and CI setup use the same Moon/proto bootstrap path.
+proto:
+  version: '0.55.4'
+
+# Go is a stable Moon v2 toolchain. Install the exact linter binary through the
+# toolchain so CI does not need a separate setup action for linting.
+go:
+  version: '1.26.2'
+  workspaces: false
+  bins:
+    - 'github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4'

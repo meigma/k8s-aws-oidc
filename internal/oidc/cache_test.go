@@ -71,6 +71,25 @@ func TestCache_Prime_Success(t *testing.T) {
 	}
 }
 
+func TestCache_CurrentBoundsFreshnessByAge(t *testing.T) {
+	f := &fakeFetcher{}
+	f.setBody(mustValidJWKS(t, "k1"))
+
+	now := time.Unix(1_700_000_000, 0)
+	c := NewCache(f, 20*time.Second, 60*time.Second, nil)
+	c.now = func() time.Time { return now }
+
+	if err := c.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	now = now.Add(75 * time.Second)
+	_, cc := c.Current()
+	if cc != "public, max-age=5" {
+		t.Fatalf("cache-control = %q, want public, max-age=5", cc)
+	}
+}
+
 func TestCache_Prime_Failure(t *testing.T) {
 	f := &fakeFetcher{}
 	f.setErr(errors.New("boom"))
@@ -148,6 +167,31 @@ func TestCache_Run_RefreshFailureRetainsStale(t *testing.T) {
 	}
 	if !c.Ready() {
 		t.Error("Ready flipped to false after refresh failure")
+	}
+}
+
+func TestCache_ExpiresAfterBoundedStaleWindow(t *testing.T) {
+	f := &fakeFetcher{}
+	f.setBody(mustValidJWKS(t, "k1"))
+
+	now := time.Unix(1_700_000_000, 0)
+	c := NewCache(f, 20*time.Second, 60*time.Second, nil)
+	c.now = func() time.Time { return now }
+
+	if err := c.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	now = now.Add(81 * time.Second)
+	body, cc := c.Current()
+	if body != nil {
+		t.Fatalf("body = %q, want nil", string(body))
+	}
+	if cc != "no-store" {
+		t.Fatalf("cache-control = %q, want no-store", cc)
+	}
+	if c.Ready() {
+		t.Fatal("Ready = true after stale window elapsed")
 	}
 }
 

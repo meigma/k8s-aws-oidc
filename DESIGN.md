@@ -103,6 +103,8 @@ Go 1.22+ enhanced `ServeMux` for the two routes. No third-party HTTP framework. 
 
 Method+path routing rejects everything except the two exact endpoints. Any other path returns 404 immediately.
 
+The readiness endpoint is served on a separate, plain HTTP listener for Kubernetes probes (default `:8080`), not via Funnel. That keeps the internet-facing surface at exactly the two AWS-required endpoints while preserving ordinary probe wiring inside the cluster.
+
 ## Trust model
 
 The trust chain that protects AWS-side credentials issued via this provider is:

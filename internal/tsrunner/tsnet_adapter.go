@@ -67,6 +67,21 @@ func (r *realServer) ListenFunnel(network, addr string) (net.Listener, error) {
 	return r.srv.ListenFunnel(network, addr)
 }
 
+func (r *realServer) CertDomains(ctx context.Context) ([]string, error) {
+	if r.srv == nil {
+		return nil, nil
+	}
+	lc, err := r.srv.LocalClient()
+	if err != nil {
+		return nil, err
+	}
+	st, err := lc.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return st.CertDomains, nil
+}
+
 func (r *realServer) BackendState(ctx context.Context) (string, error) {
 	if r.srv == nil {
 		return "", nil

@@ -19,12 +19,13 @@ type stubProvider struct {
 func (s *stubProvider) Current() ([]byte, string) { return s.body, s.cc }
 func (s *stubProvider) Ready() bool               { return s.ready }
 
-func newTestHandler(t *testing.T, p JWKSProvider) *Handler {
+func newTestHandler(t *testing.T, p JWKSProvider, publicReady func() bool) *Handler {
 	t.Helper()
 	h, err := NewHandler(
 		"https://oidc.example.ts.net",
 		3600*time.Second,
 		p,
+		publicReady,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
 	if err != nil {
@@ -35,7 +36,7 @@ func newTestHandler(t *testing.T, p JWKSProvider) *Handler {
 
 func TestHandler_Discovery(t *testing.T) {
 	p := &stubProvider{body: []byte(`{"keys":[]}`), cc: "public, max-age=60", ready: true}
-	h := newTestHandler(t, p)
+	h := newTestHandler(t, p, nil)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -66,7 +67,7 @@ func TestHandler_Discovery(t *testing.T) {
 
 func TestHandler_JWKS_Ready(t *testing.T) {
 	p := &stubProvider{body: []byte(`{"keys":[{"kid":"k1"}]}`), cc: "public, max-age=60", ready: true}
-	h := newTestHandler(t, p)
+	h := newTestHandler(t, p, nil)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -93,7 +94,7 @@ func TestHandler_JWKS_Ready(t *testing.T) {
 
 func TestHandler_JWKS_NotReady(t *testing.T) {
 	p := &stubProvider{ready: false}
-	h := newTestHandler(t, p)
+	h := newTestHandler(t, p, nil)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -110,8 +111,9 @@ func TestHandler_JWKS_NotReady(t *testing.T) {
 
 func TestHandler_Health(t *testing.T) {
 	p := &stubProvider{ready: false}
-	h := newTestHandler(t, p)
-	srv := httptest.NewServer(h.ServeMux())
+	publicReady := false
+	h := newTestHandler(t, p, func() bool { return publicReady })
+	srv := httptest.NewServer(h.HealthMux())
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/healthz")
@@ -129,13 +131,23 @@ func TestHandler_Health(t *testing.T) {
 		t.Fatalf("GET: %v", err)
 	}
 	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("jwks-ready/public-not-ready status = %d", resp.StatusCode)
+	}
+
+	publicReady = true
+	resp, err = http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("ready status = %d", resp.StatusCode)
 	}
 }
 
 func TestHandler_PostReturns405(t *testing.T) {
-	h := newTestHandler(t, &stubProvider{ready: true})
+	h := newTestHandler(t, &stubProvider{ready: true}, nil)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -150,7 +162,7 @@ func TestHandler_PostReturns405(t *testing.T) {
 }
 
 func TestHandler_UnknownPathReturns404(t *testing.T) {
-	h := newTestHandler(t, &stubProvider{ready: true})
+	h := newTestHandler(t, &stubProvider{ready: true}, nil)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -164,21 +176,45 @@ func TestHandler_UnknownPathReturns404(t *testing.T) {
 	}
 }
 
-func TestHandler_HEAD(t *testing.T) {
-	p := &stubProvider{body: []byte(`{"keys":[]}`), cc: "public, max-age=60", ready: true}
-	h := newTestHandler(t, p)
+func TestHandler_PublicMuxDoesNotExposeHealth(t *testing.T) {
+	h := newTestHandler(t, &stubProvider{ready: true}, nil)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
-	for _, path := range []string{"/.well-known/openid-configuration", "/openid/v1/jwks", "/healthz"} {
-		req, _ := http.NewRequest(http.MethodHead, srv.URL+path, nil)
+	resp, err := http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d (want 404)", resp.StatusCode)
+	}
+}
+
+func TestHandler_HEAD(t *testing.T) {
+	p := &stubProvider{body: []byte(`{"keys":[]}`), cc: "public, max-age=60", ready: true}
+	h := newTestHandler(t, p, nil)
+	publicSrv := httptest.NewServer(h.ServeMux())
+	defer publicSrv.Close()
+	healthSrv := httptest.NewServer(h.HealthMux())
+	defer healthSrv.Close()
+
+	for _, target := range []struct {
+		base string
+		path string
+	}{
+		{base: publicSrv.URL, path: "/.well-known/openid-configuration"},
+		{base: publicSrv.URL, path: "/openid/v1/jwks"},
+		{base: healthSrv.URL, path: "/healthz"},
+	} {
+		req, _ := http.NewRequest(http.MethodHead, target.base+target.path, nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			t.Fatalf("HEAD %s: %v", path, err)
+			t.Fatalf("HEAD %s: %v", target.path, err)
 		}
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			t.Errorf("HEAD %s: status = %d", path, resp.StatusCode)
+			t.Errorf("HEAD %s: status = %d", target.path, resp.StatusCode)
 		}
 	}
 }
@@ -196,18 +232,28 @@ func TestHandler_LogSecretLeakCanary(t *testing.T) {
 			cc:    "public, max-age=60",
 			ready: true,
 		},
+		nil,
 		logger,
 	)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
-	srv := httptest.NewServer(h.ServeMux())
-	defer srv.Close()
+	publicSrv := httptest.NewServer(h.ServeMux())
+	defer publicSrv.Close()
+	healthSrv := httptest.NewServer(h.HealthMux())
+	defer healthSrv.Close()
 
-	for _, path := range []string{"/.well-known/openid-configuration", "/openid/v1/jwks", "/healthz"} {
-		resp, gerr := http.Get(srv.URL + path)
+	for _, target := range []struct {
+		base string
+		path string
+	}{
+		{base: publicSrv.URL, path: "/.well-known/openid-configuration"},
+		{base: publicSrv.URL, path: "/openid/v1/jwks"},
+		{base: healthSrv.URL, path: "/healthz"},
+	} {
+		resp, gerr := http.Get(target.base + target.path)
 		if gerr != nil {
-			t.Fatalf("GET %s: %v", path, gerr)
+			t.Fatalf("GET %s: %v", target.path, gerr)
 		}
 		resp.Body.Close()
 	}

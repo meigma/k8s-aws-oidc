@@ -14,12 +14,12 @@ type JWKSProvider interface {
 	Ready() bool
 }
 
-// Handler serves the three routes the binary exposes:
-// /.well-known/openid-configuration, /openid/v1/jwks, and /healthz.
+// Handler serves the public OIDC routes and the separate health endpoint.
 type Handler struct {
 	Discovery       []byte
 	DiscoveryMaxAge time.Duration
 	JWKS            JWKSProvider
+	PublicReady     func() bool
 	Logger          *slog.Logger
 }
 
@@ -29,10 +29,14 @@ func NewHandler(
 	issuer string,
 	discoveryMaxAge time.Duration,
 	jwks JWKSProvider,
+	publicReady func() bool,
 	logger *slog.Logger,
 ) (*Handler, error) {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if publicReady == nil {
+		publicReady = func() bool { return true }
 	}
 	body, err := Render(issuer)
 	if err != nil {
@@ -42,16 +46,24 @@ func NewHandler(
 		Discovery:       body,
 		DiscoveryMaxAge: discoveryMaxAge,
 		JWKS:            jwks,
+		PublicReady:     publicReady,
 		Logger:          logger,
 	}, nil
 }
 
-// ServeMux returns a stdlib mux with exactly three routes registered using
-// Go 1.22+ method+path patterns.
+// ServeMux returns a stdlib mux with exactly the two public OIDC routes
+// registered using Go 1.22+ method+path patterns.
 func (h *Handler) ServeMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/openid-configuration", h.handleDiscovery)
 	mux.HandleFunc("GET /openid/v1/jwks", h.handleJWKS)
+	return mux
+}
+
+// HealthMux returns a stdlib mux that serves only /healthz. It is intended to
+// be bound on a separate, non-Funnel listener for Kubernetes probes.
+func (h *Handler) HealthMux() *http.ServeMux {
+	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.handleHealth)
 	return mux
 }
@@ -80,7 +92,7 @@ func (h *Handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
-	if !h.JWKS.Ready() {
+	if !h.PublicReady() || !h.JWKS.Ready() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("not ready\n"))
 		return
