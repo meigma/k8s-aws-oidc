@@ -3,9 +3,11 @@ package tsrunner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"sync/atomic"
 	"time"
 )
@@ -45,6 +47,11 @@ type tsnetServer interface {
 	// BackendState returns the current ipn backend state string. The runner
 	// only cares about "Running" and "NeedsLogin".
 	BackendState(ctx context.Context) (string, error)
+	// CertDomains returns the list of DNS names this node can serve TLS for.
+	// For a Funnel-enabled node this includes the public Funnel FQDN
+	// (<hostname>.<tailnet>.ts.net). The runner uses it to verify that the
+	// configured ISSUER_URL matches what tsnet will actually present.
+	CertDomains(ctx context.Context) ([]string, error)
 	// SetAuthKey configures the auth key to use on the next Start. It must
 	// be safe to call only before Start (the real adapter recreates the
 	// underlying tsnet.Server when reauth is required).
@@ -52,6 +59,12 @@ type tsnetServer interface {
 	// Close releases all resources held by the node.
 	Close() error
 }
+
+// ErrIssuerHostMismatch is returned by Run when the configured issuer host
+// does not match the FQDN tsnet is about to present. It is fatal: retrying
+// will not change the result, and serving the wrong issuer would silently
+// break AWS-side IRSA validation.
+var ErrIssuerHostMismatch = errors.New("issuer host does not match tsnet cert domains")
 
 // ServerFactory builds a fresh tsnetServer. The runner calls it on every
 // reauth so that the underlying tsnet.Server's identity state can be reset
@@ -89,6 +102,17 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	PollInterval    time.Duration
 	Logger          *slog.Logger
+	// SetPublicReady is called when the public Funnel listener becomes able to
+	// serve requests and again when it is no longer serving. It is intended for
+	// wiring readiness probes to the actual public trust surface.
+	SetPublicReady func(bool)
+	// ExpectedIssuerHost, if non-empty, is verified against the tsnet node's
+	// CertDomains the first time it reaches Running. If the host is not in
+	// the cert domains list, Run returns ErrIssuerHostMismatch and exits.
+	// This catches operator typos where ISSUER_URL drifts from TS_HOSTNAME or
+	// the registered tailnet identity, which would otherwise produce a
+	// silently-broken IRSA setup.
+	ExpectedIssuerHost string
 }
 
 func (c *Config) defaults() {
@@ -110,6 +134,9 @@ func (c *Config) defaults() {
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
+	if c.SetPublicReady == nil {
+		c.SetPublicReady = func(bool) {}
+	}
 }
 
 // Run brings up tsnet, serves the configured HTTP handler over Funnel, and
@@ -127,6 +154,7 @@ func Run(ctx context.Context, cfg Config, factory ServerFactory, minter AuthKeyM
 	}()
 
 	backoff := backoffState{base: backoffBase, max: backoffMax}
+	verified := false
 
 	for {
 		if ctx.Err() != nil {
@@ -134,30 +162,83 @@ func Run(ctx context.Context, cfg Config, factory ServerFactory, minter AuthKeyM
 		}
 		if server == nil {
 			server = factory()
+			verified = false
 		}
 
 		state, startErr := startAndProbe(ctx, server, cfg.StartTimeout)
-		next := decideNext(state, startErr)
-
-		switch next {
+		switch decideNext(state, startErr) {
 		case actionServe:
-			backoff.reset()
-			if err := serveOnce(ctx, cfg, server); err != nil {
-				logger.ErrorContext(ctx, "serve loop ended", "error", err.Error())
-			}
+			fatal := handleServe(ctx, cfg, server, &verified, &backoff)
 			_ = server.Close()
 			server = nil
+			if fatal != nil {
+				return fatal
+			}
 		case actionReauth:
 			server = handleReauth(ctx, logger, factory, minter, server, &backoff)
+			verified = false
 		case actionRetry:
 			logger.ErrorContext(ctx, "tsnet start failed", "error", errString(startErr), "state", state)
-			if err := backoff.sleep(ctx); err != nil {
-				return nil
-			}
+			_ = backoff.sleep(ctx)
 			_ = server.Close()
 			server = nil
 		}
 	}
+}
+
+// handleServe runs one serve cycle. A non-nil return is a fatal error that
+// should terminate Run immediately (e.g. [ErrIssuerHostMismatch]). For
+// recoverable serve errors it logs and backs off, returning nil so the outer
+// loop continues; ctx cancellation during backoff is detected at the top of
+// the next iteration rather than propagated as an error here.
+func handleServe(
+	ctx context.Context,
+	cfg Config,
+	server tsnetServer,
+	verified *bool,
+	backoff *backoffState,
+) error {
+	backoff.reset()
+	err := runServeStep(ctx, cfg, server, verified)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrIssuerHostMismatch) {
+		return err
+	}
+	cfg.Logger.ErrorContext(ctx, "serve loop ended", "error", err.Error())
+	_ = backoff.sleep(ctx)
+	return nil
+}
+
+// runServeStep performs the verify-then-serve sequence for one Running cycle.
+// Returns ErrIssuerHostMismatch (or another fatal error) on first verification
+// failure. Other serve errors are returned to the outer loop for backoff.
+func runServeStep(ctx context.Context, cfg Config, server tsnetServer, verified *bool) error {
+	if !*verified {
+		if err := verifyIssuerHost(ctx, server, cfg.ExpectedIssuerHost); err != nil {
+			return err
+		}
+		*verified = true
+	}
+	return serveOnce(ctx, cfg, server)
+}
+
+// verifyIssuerHost reads the tsnet node's CertDomains and checks that the
+// expected host is present. An empty expectedHost disables the check (used
+// by tests that don't care about the FQDN match).
+func verifyIssuerHost(ctx context.Context, server tsnetServer, expectedHost string) error {
+	if expectedHost == "" {
+		return nil
+	}
+	domains, err := server.CertDomains(ctx)
+	if err != nil {
+		return fmt.Errorf("read cert domains: %w", err)
+	}
+	if slices.Contains(domains, expectedHost) {
+		return nil
+	}
+	return fmt.Errorf("%w: expected %q, tsnet cert domains %v", ErrIssuerHostMismatch, expectedHost, domains)
 }
 
 type loopAction int
@@ -172,7 +253,9 @@ func startAndProbe(ctx context.Context, server tsnetServer, timeout time.Duratio
 	startCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	startErr := server.Start(startCtx)
-	state, _ := server.BackendState(ctx)
+	probeCtx, cancelProbe := context.WithTimeout(ctx, timeout)
+	defer cancelProbe()
+	state, _ := server.BackendState(probeCtx)
 	return state, startErr
 }
 
@@ -222,6 +305,7 @@ func errString(err error) string {
 // ctx is cancelled or the watcher detects a flip out of Running.
 func serveOnce(ctx context.Context, cfg Config, server tsnetServer) error {
 	logger := cfg.Logger
+	cfg.SetPublicReady(false)
 
 	ln, listenErr := server.ListenFunnel("tcp", cfg.FunnelAddr)
 	if listenErr != nil {
@@ -243,6 +327,8 @@ func serveOnce(ctx context.Context, cfg Config, server tsnetServer) error {
 	go func() {
 		serveErr <- srv.Serve(ln)
 	}()
+	cfg.SetPublicReady(true)
+	defer cfg.SetPublicReady(false)
 
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	defer cancelWatch()
@@ -251,15 +337,18 @@ func serveOnce(ctx context.Context, cfg Config, server tsnetServer) error {
 
 	select {
 	case <-ctx.Done():
+		cfg.SetPublicReady(false)
 		shutdown(ctx, srv, cfg.ShutdownTimeout, logger)
 		<-serveErr
 		return nil
 	case <-flipped:
 		logger.WarnContext(ctx, "tsnet backend flipped to NeedsLogin; restarting")
+		cfg.SetPublicReady(false)
 		shutdown(ctx, srv, cfg.ShutdownTimeout, logger)
 		<-serveErr
 		return nil
 	case err := <-serveErr:
+		cfg.SetPublicReady(false)
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}

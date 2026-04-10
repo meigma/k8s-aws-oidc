@@ -14,6 +14,15 @@ import (
 )
 
 const (
+	// DefaultJWKSUpstreamURL is the only upstream JWKS endpoint the service
+	// uses in production.
+	DefaultJWKSUpstreamURL = "https://kubernetes.default.svc/openid/v1/jwks"
+	// DefaultSATokenPath is the in-cluster projected service-account token.
+	// #nosec G101 -- filesystem path to a projected token file, not a secret literal
+	DefaultSATokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	// DefaultSACAPath is the in-cluster projected Kubernetes CA bundle.
+	DefaultSACAPath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
 	fetchClientTimeout   = 10 * time.Second
 	fetchTLSHandshake    = 5 * time.Second
 	fetchIdleConnTimeout = 90 * time.Second
@@ -42,6 +51,7 @@ func NewHTTPFetcher(url, tokenPath, caPath string, logger *slog.Logger) (*HTTPFe
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// #nosec G304 -- paths are fixed in production and parameterized here only for tests/composition
 	pem, err := os.ReadFile(caPath)
 	if err != nil {
 		return nil, fmt.Errorf("read CA %q: %w", caPath, err)
@@ -122,9 +132,10 @@ type bearerTokenTransport struct {
 
 func (t *bearerTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// tokenPath is set at construction from a config-supplied path that is
-	// expected to be the in-cluster service account token mount. We re-read
-	// it on every request to honor kubelet projected-token rotation.
-	//nolint:gosec // G703: tokenPath is operator-controlled config, not request input
+	// expected to be the in-cluster service account token mount during
+	// production startup. We re-read it on every request to honor kubelet
+	// projected-token rotation.
+	// #nosec G304,G703 -- path is fixed in production and parameterized here only for tests/composition
 	tok, err := os.ReadFile(t.tokenPath)
 	if err != nil {
 		return nil, fmt.Errorf("read token %q: %w", t.tokenPath, err)

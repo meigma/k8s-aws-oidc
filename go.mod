@@ -1,6 +1,6 @@
 module github.com/meigma/k8s-aws-oidc
 
-go 1.26.1
+go 1.26.2
 
 require (
 	golang.org/x/oauth2 v0.36.0

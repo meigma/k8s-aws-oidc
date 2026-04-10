@@ -22,11 +22,8 @@ type Config struct {
 	TSAPIClientID     string
 	TSAPIClientSecret string
 	TSTag             string
-	TSAPIBaseURL      string
+	HealthAddr        string
 
-	JWKSUpstreamURL       string
-	JWKSUpstreamTokenPath string
-	JWKSUpstreamCAPath    string
 	JWKSCacheTTL          time.Duration
 	JWKSCacheMaxAgeHeader time.Duration
 	DiscoveryMaxAgeHeader time.Duration
@@ -37,10 +34,9 @@ type Config struct {
 	FunnelAddr           string
 	LogLevel             slog.Level
 	StartupFetchTimeout  time.Duration
+	TSStartTimeout       time.Duration
 	ShutdownTimeout      time.Duration
 	TSStatusPollInterval time.Duration
-
-	DevListenAddr string
 }
 
 const (
@@ -48,24 +44,22 @@ const (
 	defaultJWKSCacheMaxAge      = 60 * time.Second
 	defaultDiscoveryMaxAge      = 3600 * time.Second
 	defaultStartupFetchTimeout  = 30 * time.Second
+	defaultTSStartTimeout       = 30 * time.Second
 	defaultShutdownTimeout      = 10 * time.Second
 	defaultTSStatusPollInterval = 15 * time.Second
 	minJWKSCacheTTL             = 5 * time.Second
 )
 
-// tsEnvVars are all environment variables that imply real-tailnet operation.
-// If any of these are set together with DEV_LISTEN_ADDR, Load rejects the
-// configuration to prevent accidentally enabling the dev path in production.
+// removedEnvVars are no longer supported because the service must only talk
+// to the in-cluster apiserver JWKS endpoint and the production Tailscale API.
 //
 //nolint:gochecknoglobals // immutable lookup table; clearer as a package var than recreated per call
-var tsEnvVars = []string{
-	"TS_HOSTNAME",
-	"TS_STATE_SECRET",
-	"TS_API_CLIENT_ID",
-	"TS_API_CLIENT_SECRET",
-	"TS_TAG",
+var removedEnvVars = []string{
+	"JWKS_UPSTREAM_URL",
 	"TS_API_BASE_URL",
-	"FUNNEL_ADDR",
+	"JWKS_UPSTREAM_TOKEN_PATH",
+	"JWKS_UPSTREAM_CA_PATH",
+	"DEV_LISTEN_ADDR",
 }
 
 // Load reads the configuration from environment variables and validates it.
@@ -77,18 +71,8 @@ func Load() (*Config, error) {
 		TSAPIClientID:     os.Getenv("TS_API_CLIENT_ID"),
 		TSAPIClientSecret: os.Getenv("TS_API_CLIENT_SECRET"),
 		TSTag:             os.Getenv("TS_TAG"),
-		TSAPIBaseURL:      envDefault("TS_API_BASE_URL", "https://api.tailscale.com"),
-		JWKSUpstreamURL:   envDefault("JWKS_UPSTREAM_URL", "https://kubernetes.default.svc/openid/v1/jwks"),
-		JWKSUpstreamTokenPath: envDefault(
-			"JWKS_UPSTREAM_TOKEN_PATH",
-			"/var/run/secrets/kubernetes.io/serviceaccount/token",
-		),
-		JWKSUpstreamCAPath: envDefault(
-			"JWKS_UPSTREAM_CA_PATH",
-			"/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
-		),
-		FunnelAddr:    envDefault("FUNNEL_ADDR", ":443"),
-		DevListenAddr: os.Getenv("DEV_LISTEN_ADDR"),
+		HealthAddr:        envDefault("HEALTH_ADDR", ":8080"),
+		FunnelAddr:        envDefault("FUNNEL_ADDR", ":443"),
 	}
 
 	var err error
@@ -102,6 +86,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if cfg.StartupFetchTimeout, err = envDuration("STARTUP_FETCH_TIMEOUT", defaultStartupFetchTimeout); err != nil {
+		return nil, err
+	}
+	if cfg.TSStartTimeout, err = envDuration("TS_START_TIMEOUT", defaultTSStartTimeout); err != nil {
 		return nil, err
 	}
 	if cfg.ShutdownTimeout, err = envDuration("SHUTDOWN_TIMEOUT", defaultShutdownTimeout); err != nil {
@@ -137,35 +124,57 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	if err := c.validateDevModeMutex(); err != nil {
+	if err := validateRemovedEnvVars(); err != nil {
 		return err
 	}
 	if err := c.validateIssuerURL(); err != nil {
 		return err
 	}
-	if c.DevListenAddr == "" {
-		if err := c.validateProdRequired(); err != nil {
-			return err
-		}
+	if err := c.validateProdRequired(); err != nil {
+		return err
 	}
-	if c.JWKSCacheTTL < minJWKSCacheTTL {
-		return fmt.Errorf("JWKS_CACHE_TTL: must be >= %s, got %s", minJWKSCacheTTL, c.JWKSCacheTTL)
+	if err := c.validateAllowlist(); err != nil {
+		return err
+	}
+	if err := c.validateDurations(); err != nil {
+		return err
 	}
 	return nil
 }
 
-func (c *Config) validateDevModeMutex() error {
-	if c.DevListenAddr == "" {
-		return nil
-	}
-	var setVars []string
-	for _, name := range tsEnvVars {
+func validateRemovedEnvVars() error {
+	for _, name := range removedEnvVars {
 		if os.Getenv(name) != "" {
-			setVars = append(setVars, name)
+			return fmt.Errorf("%s is no longer configurable; remove it from the environment", name)
 		}
 	}
-	if len(setVars) > 0 {
-		return fmt.Errorf("DEV_LISTEN_ADDR is set together with production env vars %v: refusing to start", setVars)
+	return nil
+}
+
+// validateDurations rejects zero/negative values for every duration field.
+// [time.NewTicker] panics on non-positive durations and Cache-Control headers
+// must not be negative, so these need to fail at config-load time rather than
+// crash a serving process or emit malformed responses.
+func (c *Config) validateDurations() error {
+	checks := []struct {
+		name string
+		val  time.Duration
+	}{
+		{"JWKS_CACHE_TTL", c.JWKSCacheTTL},
+		{"JWKS_CACHE_MAX_AGE_HEADER", c.JWKSCacheMaxAgeHeader},
+		{"DISCOVERY_MAX_AGE_HEADER", c.DiscoveryMaxAgeHeader},
+		{"STARTUP_FETCH_TIMEOUT", c.StartupFetchTimeout},
+		{"TS_START_TIMEOUT", c.TSStartTimeout},
+		{"SHUTDOWN_TIMEOUT", c.ShutdownTimeout},
+		{"TS_STATUS_POLL_INTERVAL", c.TSStatusPollInterval},
+	}
+	for _, ch := range checks {
+		if ch.val <= 0 {
+			return fmt.Errorf("%s: must be positive, got %s", ch.name, ch.val)
+		}
+	}
+	if c.JWKSCacheTTL < minJWKSCacheTTL {
+		return fmt.Errorf("JWKS_CACHE_TTL: must be >= %s, got %s", minJWKSCacheTTL, c.JWKSCacheTTL)
 	}
 	return nil
 }
@@ -184,8 +193,32 @@ func (c *Config) validateIssuerURL() error {
 	if u.Host == "" {
 		return errors.New("ISSUER_URL: missing host")
 	}
-	if strings.HasSuffix(c.IssuerURL, "/") {
-		return errors.New("ISSUER_URL: must not have trailing slash")
+	if u.Port() != "" {
+		return fmt.Errorf("ISSUER_URL: must not contain an explicit port, got %q", u.Port())
+	}
+	// The handler only serves the two well-known paths at the root, so the
+	// issuer URL must be host-only. Anything else (path/query/fragment/userinfo)
+	// produces a discovery document that advertises endpoints this process
+	// will never serve, breaking AWS-side validation in a way that looks fine
+	// at config-load time.
+	if u.Path != "" {
+		return fmt.Errorf("ISSUER_URL: must not contain a path, got %q", u.Path)
+	}
+	if u.RawQuery != "" {
+		return errors.New("ISSUER_URL: must not contain a query string")
+	}
+	if u.Fragment != "" {
+		return errors.New("ISSUER_URL: must not contain a fragment")
+	}
+	if u.User != nil {
+		return errors.New("ISSUER_URL: must not contain userinfo")
+	}
+	return nil
+}
+
+func (c *Config) validateAllowlist() error {
+	if c.SourceIPAllowlistEnabled && len(c.SourceIPAllowlistCIDRs) == 0 {
+		return errors.New("SOURCE_IP_ALLOWLIST_CIDRS is required when SOURCE_IP_ALLOWLIST_ENABLED=true")
 	}
 	return nil
 }

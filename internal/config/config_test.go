@@ -29,26 +29,20 @@ func TestLoad_HappyPath_Defaults(t *testing.T) {
 	if cfg.IssuerURL != "https://oidc.example.ts.net" {
 		t.Errorf("IssuerURL = %q", cfg.IssuerURL)
 	}
-	if cfg.JWKSUpstreamURL != "https://kubernetes.default.svc/openid/v1/jwks" {
-		t.Errorf("JWKSUpstreamURL default = %q", cfg.JWKSUpstreamURL)
-	}
-	if cfg.JWKSUpstreamTokenPath != "/var/run/secrets/kubernetes.io/serviceaccount/token" {
-		t.Errorf("JWKSUpstreamTokenPath default = %q", cfg.JWKSUpstreamTokenPath)
-	}
-	if cfg.JWKSUpstreamCAPath != "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt" {
-		t.Errorf("JWKSUpstreamCAPath default = %q", cfg.JWKSUpstreamCAPath)
-	}
 	if cfg.JWKSCacheTTL != 60*time.Second {
 		t.Errorf("JWKSCacheTTL default = %s", cfg.JWKSCacheTTL)
+	}
+	if cfg.TSStartTimeout != 30*time.Second {
+		t.Errorf("TSStartTimeout default = %s", cfg.TSStartTimeout)
+	}
+	if cfg.HealthAddr != ":8080" {
+		t.Errorf("HealthAddr default = %q", cfg.HealthAddr)
 	}
 	if cfg.DiscoveryMaxAgeHeader != 3600*time.Second {
 		t.Errorf("DiscoveryMaxAgeHeader default = %s", cfg.DiscoveryMaxAgeHeader)
 	}
 	if cfg.FunnelAddr != ":443" {
 		t.Errorf("FunnelAddr default = %q", cfg.FunnelAddr)
-	}
-	if cfg.TSAPIBaseURL != "https://api.tailscale.com" {
-		t.Errorf("TSAPIBaseURL default = %q", cfg.TSAPIBaseURL)
 	}
 	if cfg.LogLevel != slog.LevelInfo {
 		t.Errorf("LogLevel default = %v", cfg.LogLevel)
@@ -60,17 +54,15 @@ func TestLoad_HappyPath_Defaults(t *testing.T) {
 
 func TestLoad_AllExplicit(t *testing.T) {
 	setProdEnv(t)
-	t.Setenv("TS_API_BASE_URL", "https://api.example.com")
-	t.Setenv("JWKS_UPSTREAM_URL", "https://example/openid/v1/jwks")
-	t.Setenv("JWKS_UPSTREAM_TOKEN_PATH", "/tmp/token")
-	t.Setenv("JWKS_UPSTREAM_CA_PATH", "/tmp/ca.crt")
 	t.Setenv("JWKS_CACHE_TTL", "30s")
 	t.Setenv("JWKS_CACHE_MAX_AGE_HEADER", "30s")
 	t.Setenv("DISCOVERY_MAX_AGE_HEADER", "120s")
 	t.Setenv("STARTUP_FETCH_TIMEOUT", "5s")
+	t.Setenv("TS_START_TIMEOUT", "7s")
 	t.Setenv("SHUTDOWN_TIMEOUT", "20s")
 	t.Setenv("TS_STATUS_POLL_INTERVAL", "10s")
 	t.Setenv("FUNNEL_ADDR", ":8443")
+	t.Setenv("HEALTH_ADDR", ":18080")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("SOURCE_IP_ALLOWLIST_ENABLED", "true")
 	t.Setenv("SOURCE_IP_ALLOWLIST_CIDRS", "10.0.0.0/8, 192.168.0.0/16")
@@ -82,6 +74,9 @@ func TestLoad_AllExplicit(t *testing.T) {
 
 	if cfg.JWKSCacheTTL != 30*time.Second {
 		t.Errorf("JWKSCacheTTL = %s", cfg.JWKSCacheTTL)
+	}
+	if cfg.TSStartTimeout != 7*time.Second {
+		t.Errorf("TSStartTimeout = %s", cfg.TSStartTimeout)
 	}
 	if cfg.LogLevel != slog.LevelDebug {
 		t.Errorf("LogLevel = %v", cfg.LogLevel)
@@ -97,6 +92,9 @@ func TestLoad_AllExplicit(t *testing.T) {
 	}
 	if cfg.FunnelAddr != ":8443" {
 		t.Errorf("FunnelAddr = %q", cfg.FunnelAddr)
+	}
+	if cfg.HealthAddr != ":18080" {
+		t.Errorf("HealthAddr = %q", cfg.HealthAddr)
 	}
 }
 
@@ -132,7 +130,13 @@ func TestLoad_InvalidIssuerURL(t *testing.T) {
 		errSub string
 	}{
 		{"http_scheme", "http://oidc.example.ts.net", "https"},
-		{"trailing_slash", "https://oidc.example.ts.net/", "trailing slash"},
+		{"trailing_slash", "https://oidc.example.ts.net/", "must not contain a path"},
+		{"path_segment", "https://oidc.example.ts.net/cluster-a", "must not contain a path"},
+		{"deep_path", "https://oidc.example.ts.net/foo/bar", "must not contain a path"},
+		{"explicit_port", "https://oidc.example.ts.net:443", "must not contain an explicit port"},
+		{"query_string", "https://oidc.example.ts.net?x=1", "query string"},
+		{"fragment", "https://oidc.example.ts.net#frag", "fragment"},
+		{"userinfo", "https://user:pass@oidc.example.ts.net", "userinfo"},
 		{"missing_host", "https://", "missing host"},
 		{"garbage", "::not a url", ""},
 	}
@@ -170,6 +174,43 @@ func TestLoad_InvalidCIDR(t *testing.T) {
 	}
 }
 
+func TestLoad_AllowlistEnabledRequiresCIDRs(t *testing.T) {
+	setProdEnv(t)
+	t.Setenv("SOURCE_IP_ALLOWLIST_ENABLED", "true")
+	t.Setenv("SOURCE_IP_ALLOWLIST_CIDRS", "")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for enabled allowlist without CIDRs")
+	}
+	if !strings.Contains(err.Error(), "SOURCE_IP_ALLOWLIST_CIDRS") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_RemovedEnvVarsRejected(t *testing.T) {
+	cases := []string{
+		"JWKS_UPSTREAM_URL",
+		"TS_API_BASE_URL",
+		"JWKS_UPSTREAM_TOKEN_PATH",
+		"JWKS_UPSTREAM_CA_PATH",
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			setProdEnv(t)
+			t.Setenv(name, "value")
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected error when %s is set", name)
+			}
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("error %q does not mention %s", err.Error(), name)
+			}
+		})
+	}
+}
+
 func TestLoad_CacheTTLTooLow(t *testing.T) {
 	setProdEnv(t)
 	t.Setenv("JWKS_CACHE_TTL", "1s")
@@ -179,42 +220,37 @@ func TestLoad_CacheTTLTooLow(t *testing.T) {
 	}
 }
 
-func TestLoad_DevModeRejectsTSVars(t *testing.T) {
-	cases := []string{
-		"TS_HOSTNAME",
-		"TS_STATE_SECRET",
-		"TS_API_CLIENT_ID",
-		"TS_API_CLIENT_SECRET",
-		"TS_TAG",
-		"TS_API_BASE_URL",
-		"FUNNEL_ADDR",
+func TestLoad_RejectsNonPositiveDurations(t *testing.T) {
+	cases := []struct {
+		envVar string
+		value  string
+	}{
+		{"JWKS_CACHE_TTL", "-30s"},
+		{"JWKS_CACHE_TTL", "0s"},
+		{"JWKS_CACHE_MAX_AGE_HEADER", "-1s"},
+		{"JWKS_CACHE_MAX_AGE_HEADER", "0s"},
+		{"DISCOVERY_MAX_AGE_HEADER", "-1s"},
+		{"DISCOVERY_MAX_AGE_HEADER", "0s"},
+		{"STARTUP_FETCH_TIMEOUT", "-5s"},
+		{"STARTUP_FETCH_TIMEOUT", "0s"},
+		{"TS_START_TIMEOUT", "-5s"},
+		{"TS_START_TIMEOUT", "0s"},
+		{"SHUTDOWN_TIMEOUT", "-5s"},
+		{"SHUTDOWN_TIMEOUT", "0s"},
+		{"TS_STATUS_POLL_INTERVAL", "-1s"},
+		{"TS_STATUS_POLL_INTERVAL", "0s"},
 	}
-	for _, name := range cases {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv("ISSUER_URL", "https://oidc.example.ts.net")
-			t.Setenv("DEV_LISTEN_ADDR", "127.0.0.1:8080")
-			t.Setenv(name, "value")
-
+	for _, tc := range cases {
+		t.Run(tc.envVar+"_"+tc.value, func(t *testing.T) {
+			setProdEnv(t)
+			t.Setenv(tc.envVar, tc.value)
 			_, err := Load()
 			if err == nil {
-				t.Fatalf("expected error when DEV_LISTEN_ADDR is set with %s", name)
+				t.Fatalf("expected error for %s=%s", tc.envVar, tc.value)
 			}
-			if !strings.Contains(err.Error(), name) {
-				t.Errorf("error %q does not mention %s", err.Error(), name)
+			if !strings.Contains(err.Error(), tc.envVar) {
+				t.Errorf("error %q does not mention %s", err.Error(), tc.envVar)
 			}
 		})
-	}
-}
-
-func TestLoad_DevModeMinimal(t *testing.T) {
-	t.Setenv("ISSUER_URL", "https://oidc.example.ts.net")
-	t.Setenv("DEV_LISTEN_ADDR", "127.0.0.1:8080")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.DevListenAddr != "127.0.0.1:8080" {
-		t.Errorf("DevListenAddr = %q", cfg.DevListenAddr)
 	}
 }

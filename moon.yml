@@ -21,7 +21,7 @@ tasks:
       cache: true
 
   test:
-    command: 'go test ./... -race -shuffle=on -count=1'
+    command: 'go test ./... -race -shuffle on -count 1'
     inputs:
       - '**/*.go'
       - 'go.mod'
@@ -45,6 +45,5 @@ tasks:
       - 'go.mod'
       - 'go.sum'
       - '.golangci.yml'
-    toolchain: 'system'
     options:
       cache: true

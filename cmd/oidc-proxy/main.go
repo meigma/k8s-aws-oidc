@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/meigma/k8s-aws-oidc/internal/config"
@@ -38,36 +41,20 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	fetcher, err := oidc.NewHTTPFetcher(cfg.JWKSUpstreamURL, cfg.JWKSUpstreamTokenPath, cfg.JWKSUpstreamCAPath, logger)
+	cache, err := startCache(ctx, cfg, logger)
 	if err != nil {
-		return fmt.Errorf("jwks fetcher: %w", err)
+		return err
 	}
 
-	cache := oidc.NewCache(fetcher, cfg.JWKSCacheTTL, cfg.JWKSCacheMaxAgeHeader, logger)
-
-	primeCtx, cancelPrime := context.WithTimeout(ctx, cfg.StartupFetchTimeout)
-	if primeErr := cache.Prime(primeCtx); primeErr != nil {
-		cancelPrime()
-		return fmt.Errorf("jwks prime: %w", primeErr)
-	}
-	cancelPrime()
-
-	go cache.Run(ctx)
-
-	handler, err := oidc.NewHandler(cfg.IssuerURL, cfg.DiscoveryMaxAgeHeader, cache, logger)
+	var publicReady atomic.Bool
+	handler, err := oidc.NewHandler(cfg.IssuerURL, cfg.DiscoveryMaxAgeHeader, cache, publicReady.Load, logger)
 	if err != nil {
 		return fmt.Errorf("handler: %w", err)
 	}
 
-	mux := handler.ServeMux()
-	allowlist := netx.Middleware(netx.AllowlistConfig{
-		Enabled: cfg.SourceIPAllowlistEnabled,
-		CIDRs:   cfg.SourceIPAllowlistCIDRs,
-	}, logger)
-	wrapped := allowlist(mux)
-
-	if cfg.DevListenAddr != "" {
-		return runDev(ctx, cfg, wrapped, logger)
+	runnerCfg, err := buildRunnerConfig(cfg, handler, publicReady.Store, logger)
+	if err != nil {
+		return err
 	}
 
 	factory := tsrunner.NewRealServerFactory(tsrunner.RealServerConfig{
@@ -79,19 +66,7 @@ func run() error {
 		ClientID:     cfg.TSAPIClientID,
 		ClientSecret: cfg.TSAPIClientSecret,
 		Tags:         []string{cfg.TSTag},
-		BaseURL:      cfg.TSAPIBaseURL,
 		Logger:       logger,
-	}
-
-	runnerCfg := tsrunner.Config{
-		Handler:         wrapped,
-		FunnelAddr:      cfg.FunnelAddr,
-		HTTPTimeouts:    tsrunner.DefaultHTTPTimeouts(),
-		ConnContext:     netx.ConnContext,
-		StartTimeout:    cfg.StartupFetchTimeout,
-		ShutdownTimeout: cfg.ShutdownTimeout,
-		PollInterval:    cfg.TSStatusPollInterval,
-		Logger:          logger,
 	}
 
 	logger.InfoContext(ctx, "starting tsnet runner",
@@ -99,36 +74,152 @@ func run() error {
 		"funnel_addr", cfg.FunnelAddr,
 		"issuer", cfg.IssuerURL,
 	)
-	return tsrunner.Run(ctx, runnerCfg, factory, minter)
+
+	return serveAll(ctx, stop, cfg, handler, runnerCfg, factory, minter, logger)
 }
 
-func runDev(ctx context.Context, cfg *config.Config, handler http.Handler, logger *slog.Logger) error {
-	logger.WarnContext(ctx, "DEV MODE: serving plain HTTP, no tailnet, no TLS", "addr", cfg.DevListenAddr)
+// startCache builds the HTTP fetcher, primes the JWKS cache synchronously so
+// startup fails fast on misconfiguration, and launches the background refresh
+// goroutine.
+func startCache(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*oidc.Cache, error) {
+	fetcher, err := oidc.NewHTTPFetcher(
+		oidc.DefaultJWKSUpstreamURL,
+		oidc.DefaultSATokenPath,
+		oidc.DefaultSACAPath,
+		logger,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("jwks fetcher: %w", err)
+	}
 
-	timeouts := tsrunner.DefaultHTTPTimeouts()
+	cache := oidc.NewCache(fetcher, cfg.JWKSCacheTTL, cfg.JWKSCacheMaxAgeHeader, logger)
+
+	primeCtx, cancelPrime := context.WithTimeout(ctx, cfg.StartupFetchTimeout)
+	defer cancelPrime()
+	if primeErr := cache.Prime(primeCtx); primeErr != nil {
+		return nil, fmt.Errorf("jwks prime: %w", primeErr)
+	}
+
+	go cache.Run(ctx)
+	return cache, nil
+}
+
+func buildRunnerConfig(
+	cfg *config.Config,
+	handler *oidc.Handler,
+	setPublicReady func(bool),
+	logger *slog.Logger,
+) (tsrunner.Config, error) {
+	allowlist := netx.Middleware(netx.AllowlistConfig{
+		Enabled: cfg.SourceIPAllowlistEnabled,
+		CIDRs:   cfg.SourceIPAllowlistCIDRs,
+	}, logger)
+	wrapped := allowlist(handler.ServeMux())
+
+	issuerURL, err := url.Parse(cfg.IssuerURL)
+	if err != nil {
+		return tsrunner.Config{}, fmt.Errorf("parse issuer URL: %w", err)
+	}
+
+	return tsrunner.Config{
+		Handler:            wrapped,
+		FunnelAddr:         cfg.FunnelAddr,
+		HTTPTimeouts:       tsrunner.DefaultHTTPTimeouts(),
+		ConnContext:        netx.ConnContext,
+		StartTimeout:       cfg.TSStartTimeout,
+		ShutdownTimeout:    cfg.ShutdownTimeout,
+		PollInterval:       cfg.TSStatusPollInterval,
+		Logger:             logger,
+		SetPublicReady:     setPublicReady,
+		ExpectedIssuerHost: issuerURL.Hostname(),
+	}, nil
+}
+
+// serveAll runs the health server and the tsnet runner concurrently, waits
+// for the first to exit, and then drives a graceful shutdown of the other.
+func serveAll(
+	ctx context.Context,
+	stop context.CancelFunc,
+	cfg *config.Config,
+	handler *oidc.Handler,
+	runnerCfg tsrunner.Config,
+	factory tsrunner.ServerFactory,
+	minter tsrunner.AuthKeyMinter,
+	logger *slog.Logger,
+) error {
+	healthSrv, healthErrCh, err := startHealthServer(ctx, cfg, handler, runnerCfg.HTTPTimeouts, logger)
+	if err != nil {
+		return err
+	}
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- tsrunner.Run(ctx, runnerCfg, factory, minter)
+	}()
+
+	var runErr error
+	healthErrConsumed := false
+	select {
+	case runErr = <-runErrCh:
+	case serveErr := <-healthErrCh:
+		healthErrConsumed = true
+		if serveErr != nil {
+			runErr = serveErr
+		}
+		stop()
+		runErr = firstErr(runErr, <-runErrCh)
+	}
+
+	stop()
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancelShutdown()
+	shutdownErr := healthSrv.Shutdown(shutdownCtx)
+	if shutdownErr != nil && !errors.Is(shutdownErr, http.ErrServerClosed) {
+		runErr = firstErr(runErr, fmt.Errorf("health shutdown: %w", shutdownErr))
+	}
+	if !healthErrConsumed {
+		runErr = firstErr(runErr, <-healthErrCh)
+	}
+	return runErr
+}
+
+func startHealthServer(
+	ctx context.Context,
+	cfg *config.Config,
+	handler *oidc.Handler,
+	timeouts tsrunner.HTTPTimeouts,
+	logger *slog.Logger,
+) (*http.Server, <-chan error, error) {
+	var listenCfg net.ListenConfig
+	ln, err := listenCfg.Listen(ctx, "tcp", cfg.HealthAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("health listen %s: %w", cfg.HealthAddr, err)
+	}
 	srv := &http.Server{
-		Addr:              cfg.DevListenAddr,
-		Handler:           handler,
+		Handler:           handler.HealthMux(),
 		ReadHeaderTimeout: timeouts.ReadHeaderTimeout,
 		ReadTimeout:       timeouts.ReadTimeout,
 		WriteTimeout:      timeouts.WriteTimeout,
 		IdleTimeout:       timeouts.IdleTimeout,
 		MaxHeaderBytes:    timeouts.MaxHeaderBytes,
 	}
-
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.ListenAndServe() }()
-
-	select {
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-		return nil
-	case err := <-serveErr:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
+	errCh := make(chan error, 1)
+	go func() {
+		logger.InfoContext(ctx, "starting health server", "addr", cfg.HealthAddr)
+		if serveErr := srv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("health server: %w", serveErr)
+			return
 		}
-		return err
+		errCh <- nil
+	}()
+	return srv, errCh, nil
+}
+
+func firstErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
 	}
+	return nil
 }

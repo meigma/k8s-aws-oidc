@@ -1,8 +1,0 @@
-# https://moonrepo.dev/docs/config/toolchain
-$schema: 'https://moonrepo.dev/schemas/toolchain.json'
-
-# Go toolchain. The config key is `unstable_go` until moon promotes Go support
-# out of newer-tier; this matches DESIGN.md B1 (single command surface).
-unstable_go:
-  version: '1.26.1'
-  workspaces: false

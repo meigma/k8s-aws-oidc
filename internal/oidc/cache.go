@@ -11,19 +11,19 @@ import (
 
 // Cache holds the most recently fetched, validated, marshaled JWKS bytes
 // and refreshes them in the background. On refresh failure, the previous
-// good value is retained (fail-stale, never fail-empty).
+// good value is retained only for a bounded stale window; once that window
+// expires the cache fails closed until a fresh JWKS is fetched.
 type Cache struct {
 	fetcher Fetcher
 	ttl     time.Duration
 	maxAge  time.Duration
 	logger  *slog.Logger
+	now     func() time.Time
 
 	mu        sync.RWMutex
 	current   []byte
 	updatedAt time.Time
 	ready     bool
-
-	cacheControl string
 }
 
 // NewCache constructs a Cache. ttl controls how often Run refreshes; maxAge
@@ -34,11 +34,11 @@ func NewCache(f Fetcher, ttl, maxAge time.Duration, logger *slog.Logger) *Cache 
 		logger = slog.Default()
 	}
 	return &Cache{
-		fetcher:      f,
-		ttl:          ttl,
-		maxAge:       maxAge,
-		logger:       logger,
-		cacheControl: fmt.Sprintf("public, max-age=%d", int(maxAge.Seconds())),
+		fetcher: f,
+		ttl:     ttl,
+		maxAge:  maxAge,
+		logger:  logger,
+		now:     time.Now,
 	}
 }
 
@@ -92,7 +92,7 @@ func (c *Cache) store(body []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.current = body
-	c.updatedAt = time.Now()
+	c.updatedAt = c.now()
 	c.ready = true
 }
 
@@ -101,14 +101,43 @@ func (c *Cache) store(body []byte) {
 func (c *Cache) Current() ([]byte, string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.current, c.cacheControl
+	ready, remaining := c.freshnessLocked()
+	if !ready {
+		return nil, "no-store"
+	}
+	return c.current, fmt.Sprintf("public, max-age=%d", int(remaining.Seconds()))
 }
 
 // Ready reports whether the cache has at least one good value.
 func (c *Cache) Ready() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.ready
+	ready, _ := c.freshnessLocked()
+	return ready
+}
+
+// freshnessLocked reports whether the current cache entry is still usable and,
+// if so, how much client-visible freshness remains. Callers must hold c.mu.
+//
+// We allow one refresh interval of stale serving beyond maxAge so a single
+// missed refresh does not immediately flip the service unhealthy. The
+// Cache-Control header is capped at maxAge and then reduced as the value ages,
+// so downstream caches never extend the total lifetime past the bounded stale
+// window.
+func (c *Cache) freshnessLocked() (bool, time.Duration) {
+	if !c.ready || len(c.current) == 0 || c.updatedAt.IsZero() {
+		return false, 0
+	}
+	age := max(c.now().Sub(c.updatedAt), 0)
+	staleWindow := c.maxAge + c.ttl
+	remaining := staleWindow - age
+	if remaining <= 0 {
+		return false, 0
+	}
+	if remaining > c.maxAge {
+		remaining = c.maxAge
+	}
+	return true, remaining
 }
 
 // ErrCacheNotReady is returned by callers that need a sentinel for the

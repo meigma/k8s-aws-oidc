@@ -31,6 +31,9 @@ type fakeServer struct {
 	listener net.Listener
 	listenFn func() (net.Listener, error)
 
+	certDomains    []string
+	backendStateFn func(context.Context) (string, error)
+
 	startCalls   atomic.Int32
 	listenCalls  atomic.Int32
 	closeCalls   atomic.Int32
@@ -77,10 +80,21 @@ func (f *fakeServer) ListenFunnel(_, _ string) (net.Listener, error) {
 	return ln, nil
 }
 
-func (f *fakeServer) BackendState(_ context.Context) (string, error) {
+func (f *fakeServer) BackendState(ctx context.Context) (string, error) {
+	if f.backendStateFn != nil {
+		return f.backendStateFn(ctx)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.currentState, nil
+}
+
+func (f *fakeServer) CertDomains(_ context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.certDomains))
+	copy(out, f.certDomains)
+	return out, nil
 }
 
 func (f *fakeServer) SetAuthKey(key string) {
@@ -195,6 +209,163 @@ func TestRun_HappyPath_RunningFromStart(t *testing.T) {
 	}
 	if minter.calls.Load() != 0 {
 		t.Errorf("minter called %d times (want 0)", minter.calls.Load())
+	}
+}
+
+func TestRun_PublicReadySignalTracksServeLifecycle(t *testing.T) {
+	server := newFakeServer(BackendStateRunning)
+	factory := func() tsnetServer { return server }
+
+	var ready atomic.Bool
+	updates := make(chan bool, 8)
+	cfg := Config{
+		Handler:         okHandler(),
+		FunnelAddr:      "127.0.0.1:0",
+		StartTimeout:    200 * time.Millisecond,
+		ShutdownTimeout: 200 * time.Millisecond,
+		PollInterval:    20 * time.Millisecond,
+		Logger:          discardLogger(),
+		SetPublicReady: func(v bool) {
+			ready.Store(v)
+			select {
+			case updates <- v:
+			default:
+			}
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, cfg, factory, &fakeMinter{}) }()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if ready.Load() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !ready.Load() {
+		cancel()
+		<-done
+		t.Fatal("public-ready signal never became true")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not exit")
+	}
+
+	if ready.Load() {
+		t.Fatal("public-ready signal remained true after shutdown")
+	}
+
+	sawTrue := false
+	sawFalse := false
+	close(updates)
+	for v := range updates {
+		if v {
+			sawTrue = true
+			continue
+		}
+		sawFalse = true
+	}
+	if !sawTrue || !sawFalse {
+		t.Fatalf("public-ready transitions = true:%v false:%v", sawTrue, sawFalse)
+	}
+}
+
+func TestRun_IssuerHostMatch_Serves(t *testing.T) {
+	server := newFakeServer(BackendStateRunning)
+	server.certDomains = []string{"oidc.tailnet-foo.ts.net"}
+	factory := func() tsnetServer { return server }
+
+	cfg := Config{
+		Handler:            okHandler(),
+		FunnelAddr:         "127.0.0.1:0",
+		StartTimeout:       200 * time.Millisecond,
+		ShutdownTimeout:    200 * time.Millisecond,
+		PollInterval:       20 * time.Millisecond,
+		Logger:             discardLogger(),
+		ExpectedIssuerHost: "oidc.tailnet-foo.ts.net",
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, cfg, factory, &fakeMinter{}) }()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run returned %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not exit")
+	}
+	if server.listenCalls.Load() == 0 {
+		t.Error("ListenFunnel was not called after match")
+	}
+}
+
+func TestRun_IssuerHostMismatch_Fatal(t *testing.T) {
+	server := newFakeServer(BackendStateRunning)
+	server.certDomains = []string{"oidc.tailnet-foo.ts.net"}
+	factory := func() tsnetServer { return server }
+
+	cfg := Config{
+		Handler:            okHandler(),
+		FunnelAddr:         "127.0.0.1:0",
+		StartTimeout:       200 * time.Millisecond,
+		ShutdownTimeout:    200 * time.Millisecond,
+		PollInterval:       20 * time.Millisecond,
+		Logger:             discardLogger(),
+		ExpectedIssuerHost: "wrong.tailnet-bar.ts.net",
+	}
+	done := make(chan error, 1)
+	go func() { done <- Run(t.Context(), cfg, factory, &fakeMinter{}) }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrIssuerHostMismatch) {
+			t.Errorf("Run err = %v, want ErrIssuerHostMismatch", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not exit on mismatch")
+	}
+	if server.listenCalls.Load() != 0 {
+		t.Error("ListenFunnel called despite mismatch")
+	}
+}
+
+func TestRun_IssuerHostEmpty_SkipsCheck(t *testing.T) {
+	server := newFakeServer(BackendStateRunning)
+	// No certDomains set; with no expected host the check is skipped.
+	factory := func() tsnetServer { return server }
+
+	cfg := Config{
+		Handler:         okHandler(),
+		FunnelAddr:      "127.0.0.1:0",
+		StartTimeout:    200 * time.Millisecond,
+		ShutdownTimeout: 200 * time.Millisecond,
+		PollInterval:    20 * time.Millisecond,
+		Logger:          discardLogger(),
+		// ExpectedIssuerHost intentionally empty.
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, cfg, factory, &fakeMinter{}) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+	if server.listenCalls.Load() == 0 {
+		t.Error("ListenFunnel was not called when check disabled")
 	}
 }
 
@@ -349,6 +520,75 @@ func TestRun_GracefulShutdownOnCancel(t *testing.T) {
 
 	if !server.closed.Load() {
 		t.Error("server not closed on cancel")
+	}
+}
+
+func TestRun_BackendStateProbeHonorsStartTimeout(t *testing.T) {
+	server := newFakeServer(BackendStateRunning)
+	server.backendStateFn = func(ctx context.Context) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	factory := func() tsnetServer { return server }
+
+	cfg := Config{
+		Handler:         okHandler(),
+		FunnelAddr:      "127.0.0.1:0",
+		StartTimeout:    50 * time.Millisecond,
+		ShutdownTimeout: 50 * time.Millisecond,
+		PollInterval:    20 * time.Millisecond,
+		Logger:          discardLogger(),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := Run(ctx, cfg, factory, &fakeMinter{})
+	if err != nil {
+		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("Run took too long to respect probe timeout: %s", elapsed)
+	}
+}
+
+func TestRun_ServeFailuresBackOff(t *testing.T) {
+	server := newFakeServer(BackendStateRunning)
+	server.listenFn = func() (net.Listener, error) {
+		return nil, errors.New("listen failed")
+	}
+	factory := func() tsnetServer { return server }
+
+	cfg := Config{
+		Handler:         okHandler(),
+		FunnelAddr:      "127.0.0.1:0",
+		StartTimeout:    50 * time.Millisecond,
+		ShutdownTimeout: 50 * time.Millisecond,
+		PollInterval:    20 * time.Millisecond,
+		Logger:          discardLogger(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, cfg, factory, &fakeMinter{}) }()
+
+	time.Sleep(220 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not exit")
+	}
+
+	if got := server.startCalls.Load(); got > 3 {
+		t.Fatalf("start calls = %d, want backoff to prevent tight looping", got)
 	}
 }
 
