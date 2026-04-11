@@ -1,0 +1,53 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: k8s-aws-oidc
+
+before:
+  hooks:
+    - go test ./...
+
+builds:
+  - id: oidc-proxy
+    main: ./cmd/oidc-proxy
+    binary: oidc-proxy
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -buildid=
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: oidc-proxy
+    ids:
+      - oidc-proxy
+    formats:
+      - tar.gz
+
+checksum:
+  name_template: checksums.txt
+
+dockers_v2:
+  - id: oidc-proxy
+    ids:
+      - oidc-proxy
+    dockerfile: Dockerfile
+    images:
+      - ghcr.io/meigma/k8s-aws-oidc
+    tags:
+      - "{{ .Version }}"
+    labels:
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
