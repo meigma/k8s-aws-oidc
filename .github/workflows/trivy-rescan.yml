@@ -1,0 +1,117 @@
+name: Trivy Rescan
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  rescan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Resolve Latest Release Image
+        id: latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          if [ -z "${tag}" ]; then
+            echo "found_release=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          version="${tag#v}"
+          {
+            echo "found_release=true"
+            echo "tag_name=${tag}"
+            echo "image_ref=ghcr.io/meigma/k8s-aws-oidc:${version}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Generate JSON Vulnerability Report
+        if: steps.latest.outputs.found_release == 'true'
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: ${{ steps.latest.outputs.image_ref }}
+          format: json
+          output: trivy-results.json
+          exit-code: "0"
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+      - name: Generate Table Vulnerability Report
+        if: steps.latest.outputs.found_release == 'true'
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: ${{ steps.latest.outputs.image_ref }}
+          format: table
+          output: trivy-results.txt
+          exit-code: "0"
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          skip-setup-trivy: true
+
+      - name: Upsert Rescan Issue
+        if: steps.latest.outputs.found_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ steps.latest.outputs.image_ref }}
+          TAG_NAME: ${{ steps.latest.outputs.tag_name }}
+        run: |
+          title="Trivy rescan findings for ghcr.io/meigma/k8s-aws-oidc"
+          issue_number="$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --state all \
+            --search "\"${title}\" in:title" \
+            --json number,title \
+            --jq 'map(select(.title == "'"${title}"'")) | .[0].number // empty')"
+          issue_state=""
+          if [ -n "${issue_number}" ]; then
+            issue_state="$(gh issue view "${issue_number}" --repo "${{ github.repository }}" --json state --jq .state)"
+          fi
+
+          finding_count="$(jq '[.Results[].Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' trivy-results.json)"
+
+          if [ "${finding_count}" -eq 0 ]; then
+            if [ -n "${issue_number}" ] && [ "${issue_state}" = "OPEN" ]; then
+              gh issue comment "${issue_number}" --repo "${{ github.repository }}" --body "Daily Trivy rescan for \`${IMAGE_REF}\` found no HIGH/CRITICAL vulnerabilities on $(date -u +'%Y-%m-%dT%H:%M:%SZ')."
+              gh issue close "${issue_number}" --repo "${{ github.repository }}"
+            fi
+            exit 0
+          fi
+
+          {
+            echo "<!-- trivy-rescan-issue -->"
+            echo
+            echo "Latest scanned release: \`${TAG_NAME}\`"
+            echo
+            echo "Image: \`${IMAGE_REF}\`"
+            echo
+            echo "HIGH/CRITICAL findings: ${finding_count}"
+            echo
+            echo "Updated: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo '```text'
+            sed -n '1,200p' trivy-results.txt
+            echo '```'
+          } > trivy-issue.md
+
+          if [ -n "${issue_number}" ]; then
+            if [ "${issue_state}" = "CLOSED" ]; then
+              gh issue reopen "${issue_number}" --repo "${{ github.repository }}"
+            fi
+            gh issue edit "${issue_number}" --repo "${{ github.repository }}" --body-file trivy-issue.md
+          else
+            gh issue create \
+              --repo "${{ github.repository }}" \
+              --title "${title}" \
+              --body-file trivy-issue.md
+          fi

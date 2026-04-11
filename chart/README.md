@@ -49,7 +49,6 @@ Install the chart:
 
 ```bash
 helm install oidc-proxy oci://ghcr.io/meigma/k8s-aws-oidc-chart \
-  --version 0.0.0-dev \
   --set issuerUrl=https://oidc.example.ts.net \
   --set tailscale.hostname=oidc \
   --set tailscale.tag=tag:oidc-proxy \

@@ -1,0 +1,346 @@
+name: Reusable Release
+
+on:
+  workflow_call:
+    inputs:
+      release_version:
+        required: false
+        type: string
+        default: ""
+      disable_github_release:
+        required: false
+        type: boolean
+        default: false
+      upload_release_assets:
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      github_token:
+        required: true
+
+permissions: {}
+
+jobs:
+  scan-local:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Determine Release Version
+        id: version
+        env:
+          INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          if [ -n "${INPUT_RELEASE_VERSION}" ]; then
+            version="${INPUT_RELEASE_VERSION}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+
+          {
+            echo "value=${version}"
+            echo "tag=v${version}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Create Local Release Tag
+        run: |
+          if ! git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            git tag "${{ steps.version.outputs.tag }}"
+          fi
+
+      - name: Set Up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set Up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+
+      - name: Set Up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+
+      - name: Build Release Artifacts Locally
+        uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7.0.0
+        with:
+          distribution: goreleaser
+          version: v2.14.3
+          args: release --clean --skip=announce,publish,sign
+        env:
+          GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.tag }}
+          GORELEASER_DISABLE_GITHUB_RELEASE: "true"
+
+      - name: Scan AMD64 Image With Trivy
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: ghcr.io/meigma/k8s-aws-oidc:${{ steps.version.outputs.value }}-amd64
+          format: table
+          exit-code: "1"
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+      - name: Scan ARM64 Image With Trivy
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: ghcr.io/meigma/k8s-aws-oidc:${{ steps.version.outputs.value }}-arm64
+          format: table
+          exit-code: "1"
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          skip-setup-trivy: true
+
+  publish:
+    needs: scan-local
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    outputs:
+      image_name: ${{ steps.metadata.outputs.image_name }}
+      image_digest: ${{ steps.metadata.outputs.image_digest }}
+      chart_name: ${{ steps.metadata.outputs.chart_name }}
+      chart_digest: ${{ steps.metadata.outputs.chart_digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Determine Release Version
+        id: version
+        env:
+          INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          if [ -n "${INPUT_RELEASE_VERSION}" ]; then
+            version="${INPUT_RELEASE_VERSION}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+
+          {
+            echo "value=${version}"
+            echo "tag=v${version}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Create Local Release Tag
+        run: |
+          if ! git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            git tag "${{ steps.version.outputs.tag }}"
+          fi
+
+      - name: Set Up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set Up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+
+      - name: Set Up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Set Up Helm
+        uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v4.0.4
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+        with:
+          cosign-release: v3.0.5
+
+      - name: Log In To GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.github_token }}
+
+      - name: Log In To GHCR For Helm
+        env:
+          HELM_REGISTRY_PASSWORD: ${{ secrets.github_token }}
+          HELM_REGISTRY_USER: ${{ github.actor }}
+        run: |
+          printf '%s' "${HELM_REGISTRY_PASSWORD}" | helm registry login ghcr.io \
+            --username "${HELM_REGISTRY_USER}" \
+            --password-stdin
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7.0.0
+        with:
+          distribution: goreleaser
+          version: v2.14.3
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.github_token }}
+          GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.tag }}
+          GORELEASER_DISABLE_GITHUB_RELEASE: ${{ inputs.disable_github_release }}
+
+      - name: Publish Helm Chart
+        id: chart
+        run: |
+          version="${{ steps.version.outputs.value }}"
+          chart_name="ghcr.io/meigma/k8s-aws-oidc-chart"
+          chart_package="dist/k8s-aws-oidc-chart-${version}.tgz"
+
+          helm package chart/ \
+            --version "${version}" \
+            --app-version "${version}" \
+            -d dist/
+
+          push_output="$(helm push "${chart_package}" oci://ghcr.io/meigma)"
+          printf '%s\n' "${push_output}"
+
+          digest="$(printf '%s\n' "${push_output}" | awk '/^Digest: / { print $2 }')"
+          if [ -z "${digest}" ]; then
+            echo "failed to parse Helm chart digest" >&2
+            exit 1
+          fi
+
+          cosign sign --yes "${chart_name}@${digest}"
+
+          {
+            echo "chart_name=${chart_name}"
+            echo "chart_digest=${digest}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Generate Image SBOM
+        id: image-sbom
+        run: |
+          version="${{ steps.version.outputs.value }}"
+          image_name="ghcr.io/meigma/k8s-aws-oidc"
+          image_digest="$(docker buildx imagetools inspect "${image_name}:${version}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          sbom_path="dist/k8s-aws-oidc_${version}_image.spdx.json"
+
+          if [ -z "${image_digest}" ]; then
+            echo "failed to resolve published image digest" >&2
+            exit 1
+          fi
+
+          if [ ! -f dist/digests.txt ]; then
+            printf '%s  %s\n' "${image_digest#sha256:}" "${image_name}@${image_digest}" > dist/digests.txt
+          fi
+
+          syft "${image_name}@${image_digest}" -o "spdx-json=${sbom_path}"
+          cosign attach sbom --sbom "${sbom_path}" --type spdx "${image_name}@${image_digest}"
+
+          {
+            echo "image_name=${image_name}"
+            echo "image_digest=${image_digest}"
+            echo "sbom_path=${sbom_path}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Upload Image SBOM To Release
+        if: ${{ inputs.upload_release_assets }}
+        env:
+          GH_TOKEN: ${{ secrets.github_token }}
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+        run: gh release upload "${TAG_NAME}" "${{ steps.image-sbom.outputs.sbom_path }}" --clobber
+
+      - name: Write Attestation Metadata
+        id: metadata
+        run: |
+          cat > dist/oci-attestation.env <<EOF
+          IMAGE_NAME=${{ steps.image-sbom.outputs.image_name }}
+          IMAGE_DIGEST=${{ steps.image-sbom.outputs.image_digest }}
+          CHART_NAME=${{ steps.chart.outputs.chart_name }}
+          CHART_DIGEST=${{ steps.chart.outputs.chart_digest }}
+          EOF
+
+          {
+            echo "image_name=${{ steps.image-sbom.outputs.image_name }}"
+            echo "image_digest=${{ steps.image-sbom.outputs.image_digest }}"
+            echo "chart_name=${{ steps.chart.outputs.chart_name }}"
+            echo "chart_digest=${{ steps.chart.outputs.chart_digest }}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Upload Attestation Inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-attestation-inputs
+          path: |
+            dist/checksums.txt
+            dist/digests.txt
+            dist/oci-attestation.env
+            ${{ steps.image-sbom.outputs.sbom_path }}
+          if-no-files-found: error
+
+  attest-binaries:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download Attestation Inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-attestation-inputs
+          path: attestation-inputs
+
+      - name: Attest Release Binaries
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-checksums: attestation-inputs/checksums.txt
+
+  attest-oci:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download Attestation Inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-attestation-inputs
+          path: attestation-inputs
+
+      - name: Load OCI Metadata
+        id: metadata
+        run: |
+          set -a
+          . attestation-inputs/oci-attestation.env
+          set +a
+
+          {
+            echo "image_name=${IMAGE_NAME}"
+            echo "image_digest=${IMAGE_DIGEST}"
+            echo "chart_name=${CHART_NAME}"
+            echo "chart_digest=${CHART_DIGEST}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Attest Published Image
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ${{ steps.metadata.outputs.image_name }}
+          subject-digest: ${{ steps.metadata.outputs.image_digest }}
+          push-to-registry: true
+
+      - name: Attest Published Chart
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ${{ steps.metadata.outputs.chart_name }}
+          subject-digest: ${{ steps.metadata.outputs.chart_digest }}
+          push-to-registry: true
