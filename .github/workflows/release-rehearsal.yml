@@ -1,0 +1,54 @@
+name: Release Rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Optional synthetic SemVer without the leading v (for example 0.0.0-rc.123.abcd123)'
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Compute Rehearsal Version
+        id: version
+        env:
+          INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          if [ -n "${INPUT_RELEASE_VERSION}" ]; then
+            version="${INPUT_RELEASE_VERSION}"
+          else
+            short_sha="$(printf '%s' "${GITHUB_SHA}" | cut -c1-7)"
+            version="0.0.0-rc.${GITHUB_RUN_NUMBER}.${short_sha}"
+          fi
+
+          echo "value=${version}" >> "${GITHUB_OUTPUT}"
+
+  rehearsal:
+    needs: prepare
+    uses: ./.github/workflows/reusable-release.yml
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    with:
+      release_version: ${{ needs.prepare.outputs.release_version }}
+      disable_github_release: true
+      upload_release_assets: false
+    secrets: inherit

@@ -3,6 +3,15 @@ version: 2
 
 project_name: k8s-aws-oidc
 
+release:
+  disable: "{{ .Env.GORELEASER_DISABLE_GITHUB_RELEASE }}"
+
+gomod:
+  proxy: true
+  env:
+    - GOPROXY=https://proxy.golang.org,direct
+    - GOSUMDB=sum.golang.org
+
 before:
   hooks:
     - go test ./...
@@ -33,6 +42,29 @@ archives:
 
 checksum:
   name_template: checksums.txt
+
+docker_digest:
+  name_template: digests.txt
+
+sboms:
+  - artifacts: archive
+
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+
+docker_signs:
+  - cmd: cosign
+    args:
+      - sign
+      - "${artifact}@${digest}"
+      - "--yes"
 
 dockers_v2:
   - id: oidc-proxy
