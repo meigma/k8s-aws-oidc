@@ -1,0 +1,16 @@
+apiVersion: v2
+name: k8s-aws-oidc-chart
+description: Helm chart for the k8s-aws-oidc OIDC metadata proxy exposed through Tailscale Funnel.
+type: application
+kubeVersion: ">=1.33.0-0"
+version: 0.0.0-dev
+appVersion: "0.0.0-dev"
+home: https://github.com/meigma/k8s-aws-oidc
+sources:
+  - https://github.com/meigma/k8s-aws-oidc
+keywords:
+  - aws
+  - irsa
+  - kubernetes
+  - oidc
+  - tailscale

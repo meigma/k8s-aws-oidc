@@ -1,0 +1,332 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "issuerUrl",
+    "tailscale"
+  ],
+  "properties": {
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "issuerUrl": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uri",
+      "pattern": "^https://[^/:?#]+$"
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "logLevel": {
+      "type": "string",
+      "minLength": 1
+    },
+    "funnelAddr": {
+      "type": "string",
+      "minLength": 1
+    },
+    "healthAddr": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tailscale": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hostname",
+        "tag",
+        "oauthSecret",
+        "stateSecret"
+      ],
+      "properties": {
+        "hostname": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^tag:.+"
+        },
+        "oauthSecret": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "clientIdKey",
+            "clientSecretKey"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "clientIdKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "clientSecretKey": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "stateSecret": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "create": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "sourceIpAllowlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "cidrs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "integer",
+              "number"
+            ]
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "integer",
+              "number"
+            ]
+          }
+        }
+      }
+    },
+    "priorityClassName": {
+      "type": "string"
+    },
+    "podAnnotations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "podLabels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "topologySpreadConstraints": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "durations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jwksCacheTtl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jwksCacheMaxAgeHeader": {
+          "type": "string",
+          "minLength": 1
+        },
+        "discoveryMaxAgeHeader": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startupFetchTimeout": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tsStartTimeout": {
+          "type": "string",
+          "minLength": 1
+        },
+        "shutdownTimeout": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tsStatusPollInterval": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "sourceIpAllowlist": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sourceIpAllowlist": {
+            "required": [
+              "cidrs"
+            ],
+            "properties": {
+              "cidrs": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "serviceAccount": {
+            "properties": {
+              "create": {
+                "const": false
+              }
+            },
+            "required": [
+              "create"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "serviceAccount": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

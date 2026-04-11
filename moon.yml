@@ -47,3 +47,17 @@ tasks:
       - '.golangci.yml'
     options:
       cache: true
+
+  chart-lint:
+    command: 'helm lint chart/ -f chart/ci-values.yaml'
+    inputs:
+      - 'chart/**/*'
+    options:
+      cache: true
+
+  chart-validate:
+    command: "sh -c 'helm template smoke chart/ -f chart/ci-values.yaml --kube-version 1.35.0 | kubeconform -strict -summary'"
+    inputs:
+      - 'chart/**/*'
+    options:
+      cache: true

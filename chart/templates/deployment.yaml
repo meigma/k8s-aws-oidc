@@ -1,0 +1,164 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "k8s-aws-oidc-chart.fullname" . }}
+  labels:
+    {{- include "k8s-aws-oidc-chart.labels" . | nindent 4 }}
+spec:
+  revisionHistoryLimit: 2
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "k8s-aws-oidc-chart.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "k8s-aws-oidc-chart.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "k8s-aws-oidc-chart.serviceAccountName" . }}
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      containers:
+        - name: oidc-proxy
+          image: {{ include "k8s-aws-oidc-chart.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+          ports:
+            - name: https-funnel
+              containerPort: 443
+              protocol: TCP
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: ISSUER_URL
+              value: {{ .Values.issuerUrl | quote }}
+            - name: TS_HOSTNAME
+              value: {{ .Values.tailscale.hostname | quote }}
+            - name: TS_STATE_SECRET
+              value: {{ include "k8s-aws-oidc-chart.stateSecretName" . | quote }}
+            - name: TS_API_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.tailscale.oauthSecret.name | quote }}
+                  key: {{ .Values.tailscale.oauthSecret.clientIdKey | quote }}
+            - name: TS_API_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.tailscale.oauthSecret.name | quote }}
+                  key: {{ .Values.tailscale.oauthSecret.clientSecretKey | quote }}
+            - name: TS_TAG
+              value: {{ .Values.tailscale.tag | quote }}
+            - name: HEALTH_ADDR
+              value: {{ .Values.healthAddr | quote }}
+            - name: FUNNEL_ADDR
+              value: {{ .Values.funnelAddr | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: JWKS_CACHE_TTL
+              value: {{ .Values.durations.jwksCacheTtl | quote }}
+            - name: JWKS_CACHE_MAX_AGE_HEADER
+              value: {{ .Values.durations.jwksCacheMaxAgeHeader | quote }}
+            - name: DISCOVERY_MAX_AGE_HEADER
+              value: {{ .Values.durations.discoveryMaxAgeHeader | quote }}
+            - name: STARTUP_FETCH_TIMEOUT
+              value: {{ .Values.durations.startupFetchTimeout | quote }}
+            - name: TS_START_TIMEOUT
+              value: {{ .Values.durations.tsStartTimeout | quote }}
+            - name: SHUTDOWN_TIMEOUT
+              value: {{ .Values.durations.shutdownTimeout | quote }}
+            - name: TS_STATUS_POLL_INTERVAL
+              value: {{ .Values.durations.tsStatusPollInterval | quote }}
+            - name: SOURCE_IP_ALLOWLIST_ENABLED
+              value: {{ ternary "true" "false" .Values.sourceIpAllowlist.enabled | quote }}
+            {{- if .Values.sourceIpAllowlist.cidrs }}
+            - name: SOURCE_IP_ALLOWLIST_CIDRS
+              value: {{ join "," .Values.sourceIpAllowlist.cidrs | quote }}
+            {{- end }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.uid
+            - name: XDG_CONFIG_HOME
+              value: /var/lib/tsnet
+            - name: TMPDIR
+              value: /tmp
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+              scheme: HTTP
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+              scheme: HTTP
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tsnet-var
+              mountPath: /var/lib/tsnet
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tsnet-var
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

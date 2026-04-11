@@ -1,0 +1,11 @@
+# issuerUrl is a non-production issuer URL used for linting and render validation.
+issuerUrl: https://oidc.example.ts.net
+
+# tailscale.hostname is a non-production hostname used for linting and render validation.
+# tailscale.tag is a non-production tag used for linting and render validation.
+# tailscale.oauthSecret.name is a placeholder Secret name used for linting and render validation.
+tailscale:
+  hostname: oidc
+  tag: tag:oidc-proxy
+  oauthSecret:
+    name: tailscale-oauth
