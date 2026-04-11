@@ -20,4 +20,5 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
-    secrets: inherit
+    secrets:
+      github_token: ${{ secrets.GITHUB_TOKEN }}

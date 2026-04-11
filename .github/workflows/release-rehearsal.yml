@@ -51,4 +51,5 @@ jobs:
       release_version: ${{ needs.prepare.outputs.release_version }}
       disable_github_release: true
       upload_release_assets: false
-    secrets: inherit
+    secrets:
+      github_token: ${{ secrets.GITHUB_TOKEN }}

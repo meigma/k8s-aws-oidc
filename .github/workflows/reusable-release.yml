@@ -15,6 +15,9 @@ on:
         required: false
         type: boolean
         default: true
+    secrets:
+      github_token:
+        required: true
 
 permissions: {}
 
@@ -167,14 +170,15 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.github_token }}
 
       - name: Log In To GHCR For Helm
         env:
-          HELM_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          HELM_REGISTRY_PASSWORD: ${{ secrets.github_token }}
+          HELM_REGISTRY_USER: ${{ github.actor }}
         run: |
           printf '%s' "${HELM_REGISTRY_PASSWORD}" | helm registry login ghcr.io \
-            --username "${{ github.actor }}" \
+            --username "${HELM_REGISTRY_USER}" \
             --password-stdin
 
       - name: Run GoReleaser
@@ -184,7 +188,7 @@ jobs:
           version: v2.14.3
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.github_token }}
           GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.tag }}
           GORELEASER_DISABLE_GITHUB_RELEASE: ${{ inputs.disable_github_release }}
 
@@ -245,7 +249,7 @@ jobs:
       - name: Upload Image SBOM To Release
         if: ${{ inputs.upload_release_assets }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.github_token }}
           TAG_NAME: ${{ steps.version.outputs.tag }}
         run: gh release upload "${TAG_NAME}" "${{ steps.image-sbom.outputs.sbom_path }}" --clobber
 
