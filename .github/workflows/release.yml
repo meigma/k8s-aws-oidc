@@ -21,4 +21,4 @@ jobs:
       attestations: write
       artifact-metadata: write
     secrets:
-      github_token: ${{ secrets.GITHUB_TOKEN }}
+      release_token: ${{ secrets.GITHUB_TOKEN }}

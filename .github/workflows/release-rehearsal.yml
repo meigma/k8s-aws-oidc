@@ -52,4 +52,4 @@ jobs:
       disable_github_release: true
       upload_release_assets: false
     secrets:
-      github_token: ${{ secrets.GITHUB_TOKEN }}
+      release_token: ${{ secrets.GITHUB_TOKEN }}
