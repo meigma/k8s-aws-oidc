@@ -261,34 +261,34 @@ Consumers deploy the service via a Helm chart published as an OCI artifact to GH
 
 **Layout**: a single `chart/` directory at the repo root. Coupled versioning: `Chart.yaml` `version` and `appVersion` both track the binary tag. One release PR, one set of artifacts per release.
 
-**Contents**: Deployment, ServiceAccount, Role, RoleBinding, and references (not contents) to the two Secrets the workload needs (Tailscale OAuth credentials, tsnet kubestore state). Values surface exposes only what consumers actually need to override: image repository/tag (defaulted to the release), the issuer URL, the Tailscale hostname, the secret names, replica count (defaulted to 1), and pod-level security overrides. The chart does **not** include or manage the apiserver `--service-account-issuer` flag — that's a cluster admin responsibility (see Deferred).
+**Contents**: Deployment, ServiceAccount, Role, RoleBinding, and an optional empty tsnet kubestore state Secret. The Tailscale OAuth credential Secret is always referenced, never created, by the chart. Values surface exposes only what consumers actually need to override: image repository/tag (defaulted to the release), the issuer URL, the Tailscale hostname, the secret names, source-IP allowlist settings, and pod-level security overrides. The runtime remains intentionally single-replica, so the chart does **not** expose `replicaCount`. The chart also does **not** create a Kubernetes `Service` or `Ingress`, because the public trust surface is Tailscale Funnel, not cluster networking. The chart does **not** include or manage the apiserver `--service-account-issuer` flag — that's a cluster admin responsibility (see Deferred).
 
 **Publishing**: GoReleaser does not have native Helm support, and adding a third-party action would expand the supply chain unnecessarily. Helm 3.8+ supports OCI push directly, so a dedicated step in `release.yml` (after the goreleaser step) does:
 
 ```
 helm package chart/ -d dist/
-helm push dist/<chart>-<version>.tgz oci://ghcr.io/<owner>/charts
+helm push dist/<chart>-<version>.tgz oci://ghcr.io/<owner>
 ```
 
-The published chart lives at `ghcr.io/<owner>/charts/<chart>`. Consumers install with:
+The published chart lives at `ghcr.io/<owner>/<chart>`. Consumers install with:
 
 ```
-helm install <name> oci://ghcr.io/<owner>/charts/<chart> --version <version>
+helm install <name> oci://ghcr.io/<owner>/<chart> --version <version>
 ```
 
 **Signing and attestation**: the chart is a first-class OCI artifact and goes through the same supply-chain treatment as the binary and the container image:
 
-- **Cosign signature** with the same keyless OIDC identity, in the same release job: `cosign sign --yes ghcr.io/<owner>/charts/<chart>@<digest>`.
+- **Cosign signature** with the same keyless OIDC identity, in the same release job: `cosign sign --yes ghcr.io/<owner>/<chart>@<digest>`.
 - **SLSA BL3 provenance** via the same `attest.yml` reusable workflow — the chart digest is added as a third subject. No new workflow, no new permissions.
 
 Verification is symmetric with the other artifacts:
 
 ```
-gh attestation verify --owner <owner> oci://ghcr.io/<owner>/charts/<chart>:<version>
+gh attestation verify --owner <owner> oci://ghcr.io/<owner>/<chart>:<version>
 cosign verify \
   --certificate-identity-regexp "^https://github.com/<owner>/<repo>/.*" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/<owner>/charts/<chart>:<version>
+  ghcr.io/<owner>/<chart>:<version>
 ```
 
 The chart is also lint-checked in CI as a moon task using `helm lint chart/` plus `helm template chart/ | kubeconform -strict -summary` to catch schema breakage before release.

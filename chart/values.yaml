@@ -1,0 +1,110 @@
+# nameOverride overrides the chart name used for generated resource names.
+nameOverride: ""
+
+# fullnameOverride overrides the fully qualified release name used for generated resource names.
+fullnameOverride: ""
+
+# issuerUrl is the public OIDC issuer URL served by this workload and configured on the kube-apiserver.
+issuerUrl: ""
+
+# image.repository is the container image repository for the oidc server.
+# image.tag is the container image tag. When empty, Chart.appVersion is used.
+# image.digest is the container image digest. When set, it takes precedence over image.tag.
+# image.pullPolicy is the Kubernetes image pull policy for the container image.
+image:
+  repository: ghcr.io/meigma/k8s-aws-oidc
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# imagePullSecrets is the list of image pull secrets used for the pod.
+imagePullSecrets: []
+
+# logLevel is the slog level passed to the application.
+logLevel: info
+
+# funnelAddr is the public Funnel listener address passed to the application.
+funnelAddr: ":443"
+
+# healthAddr is the internal health listener address passed to the application.
+healthAddr: ":8080"
+
+# tailscale.hostname is the Funnel hostname presented by tsnet.
+# tailscale.tag is the Tailscale tag advertised when minting auth keys.
+# tailscale.oauthSecret.name is the pre-existing Secret containing the Tailscale OAuth client credentials.
+# tailscale.oauthSecret.clientIdKey is the Secret key holding the OAuth client ID.
+# tailscale.oauthSecret.clientSecretKey is the Secret key holding the OAuth client secret.
+# tailscale.stateSecret.name overrides the Secret used by kubestore for tsnet state.
+# tailscale.stateSecret.create controls whether the chart pre-creates that empty state Secret.
+tailscale:
+  hostname: ""
+  tag: ""
+  oauthSecret:
+    name: ""
+    clientIdKey: TS_API_CLIENT_ID
+    clientSecretKey: TS_API_CLIENT_SECRET
+  stateSecret:
+    name: ""
+    create: true
+
+# sourceIpAllowlist.enabled enables CIDR-based request filtering on the public Funnel listener.
+# sourceIpAllowlist.cidrs is the list of CIDRs allowed to reach the public endpoints when enabled.
+sourceIpAllowlist:
+  enabled: false
+  cidrs: []
+
+# serviceAccount.create controls whether the chart creates a dedicated ServiceAccount.
+# serviceAccount.name sets the ServiceAccount name. When create=false, this must be set explicitly.
+# serviceAccount.annotations adds annotations to the ServiceAccount metadata.
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# rbac.create controls whether the chart creates the Role and RoleBinding needed by the workload.
+rbac:
+  create: true
+
+# resources defines the pod resource requests and limits.
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits: {}
+
+# priorityClassName sets the PriorityClass used by the pod.
+priorityClassName: ""
+
+# podAnnotations adds annotations to the pod template metadata.
+podAnnotations: {}
+
+# podLabels adds labels to the pod template metadata.
+podLabels: {}
+
+# nodeSelector constrains the nodes the pod may run on.
+nodeSelector: {}
+
+# tolerations configures pod tolerations.
+tolerations: []
+
+# affinity configures pod affinity and anti-affinity.
+affinity: {}
+
+# topologySpreadConstraints configures pod topology spread constraints.
+topologySpreadConstraints: []
+
+# durations.jwksCacheTtl overrides JWKS_CACHE_TTL.
+# durations.jwksCacheMaxAgeHeader overrides JWKS_CACHE_MAX_AGE_HEADER.
+# durations.discoveryMaxAgeHeader overrides DISCOVERY_MAX_AGE_HEADER.
+# durations.startupFetchTimeout overrides STARTUP_FETCH_TIMEOUT.
+# durations.tsStartTimeout overrides TS_START_TIMEOUT.
+# durations.shutdownTimeout overrides SHUTDOWN_TIMEOUT.
+# durations.tsStatusPollInterval overrides TS_STATUS_POLL_INTERVAL.
+durations:
+  jwksCacheTtl: 60s
+  jwksCacheMaxAgeHeader: 60s
+  discoveryMaxAgeHeader: 1h
+  startupFetchTimeout: 30s
+  tsStartTimeout: 30s
+  shutdownTimeout: 10s
+  tsStatusPollInterval: 15s
