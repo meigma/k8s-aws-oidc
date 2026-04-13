@@ -1,0 +1,9 @@
+label: Explanation
+position: 5
+collapsed: true
+link:
+  type: generated-index
+  title: Explanation
+  description: Background on trust, issuer matching, and cache behavior.
+  slug: /explanation
+

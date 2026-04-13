@@ -253,10 +253,34 @@ func startAndProbe(ctx context.Context, server tsnetServer, timeout time.Duratio
 	startCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	startErr := server.Start(startCtx)
-	probeCtx, cancelProbe := context.WithTimeout(ctx, timeout)
-	defer cancelProbe()
-	state, _ := server.BackendState(probeCtx)
-	return state, startErr
+	if startErr != nil {
+		probeCtx, cancelProbe := context.WithTimeout(ctx, timeout)
+		defer cancelProbe()
+		state, _ := server.BackendState(probeCtx)
+		return state, startErr
+	}
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	var lastState string
+	for {
+		probeCtx, cancelProbe := context.WithTimeout(ctx, timeout)
+		state, err := server.BackendState(probeCtx)
+		cancelProbe()
+		if err == nil && state != "" {
+			lastState = state
+			if state == BackendStateRunning || state == BackendStateNeedsLogin {
+				return state, nil
+			}
+		}
+
+		select {
+		case <-startCtx.Done():
+			return lastState, startCtx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func decideNext(state string, startErr error) loopAction {

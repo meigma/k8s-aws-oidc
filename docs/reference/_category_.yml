@@ -1,0 +1,9 @@
+label: Reference
+position: 4
+collapsed: true
+link:
+  type: generated-index
+  title: Reference
+  description: Config, chart, Terraform, and endpoint details.
+  slug: /reference
+

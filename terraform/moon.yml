@@ -1,0 +1,36 @@
+# https://moonrepo.dev/docs/config/project
+$schema: 'https://moonrepo.dev/schemas/project.json'
+
+workspace:
+  inheritedTasks:
+    include: []
+
+tasks:
+  fmt:
+    command: 'tofu fmt -check -diff -recursive .'
+    inputs:
+      - '**/*.tf'
+      - '**/*.tfvars'
+      - '.tflint.hcl'
+      - 'README.md'
+    options:
+      cache: true
+
+  lint:
+    command: 'tflint --recursive --format compact'
+    inputs:
+      - '**/*.tf'
+      - '**/*.tfvars'
+      - '.tflint.hcl'
+    options:
+      cache: true
+
+  validate:
+    command: "sh -c 'cd examples/basic && tofu init -backend=false -input=false -no-color >/dev/null && tofu validate -no-color'"
+    inputs:
+      - '**/*.tf'
+      - '**/*.tfvars'
+      - '.tflint.hcl'
+    options:
+      cache: true
+

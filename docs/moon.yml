@@ -1,0 +1,40 @@
+# https://moonrepo.dev/docs/config/project
+$schema: 'https://moonrepo.dev/schemas/project.json'
+
+language: 'typescript'
+layer: 'application'
+
+tasks:
+  build:
+    command: 'npm run build'
+    inputs:
+      - 'index.md'
+      - 'tutorials/**/*'
+      - 'how-to/**/*'
+      - 'reference/**/*'
+      - 'explanation/**/*'
+      - 'src/**/*'
+      - 'static/**/*'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'docusaurus.config.ts'
+      - 'sidebars.ts'
+      - 'wrangler.jsonc'
+    outputs:
+      - 'build'
+    options:
+      cache: true
+
+  typecheck:
+    command: 'npm run typecheck'
+    inputs:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'docusaurus.config.ts'
+      - 'sidebars.ts'
+      - 'src/**/*'
+    options:
+      cache: true
+

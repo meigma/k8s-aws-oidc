@@ -1,3 +1,6 @@
 .moon/cache
 .moon/docker
+.env
+dist/
+tmp/
 oidc-proxy

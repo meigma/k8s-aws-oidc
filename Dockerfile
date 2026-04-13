@@ -2,7 +2,7 @@ FROM gcr.io/distroless/static-debian12:nonroot@sha256:a9329520abc449e3b14d5bc3a6
 
 ARG TARGETPLATFORM
 
-COPY $TARGETPLATFORM/oidc-proxy /usr/bin/oidc-proxy
+COPY --chmod=0755 $TARGETPLATFORM/oidc-proxy /usr/bin/oidc-proxy
 
 EXPOSE 443 8080
 

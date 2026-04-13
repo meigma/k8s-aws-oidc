@@ -1,0 +1,9 @@
+label: How-to
+position: 3
+collapsed: true
+link:
+  type: generated-index
+  title: How-to
+  description: Operator guides for deployment variants and authentication failures.
+  slug: /how-to
+
