@@ -186,4 +186,9 @@ Terraform, or docs areas you touched.
 
 ## License
 
-This repository does not currently include a `LICENSE` file.
+This repository is dual-licensed under either of:
+
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)
+
+You may use this repository under either license, at your option.
