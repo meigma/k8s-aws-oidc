@@ -34,6 +34,8 @@ const (
 	backoffBase   = 100 * time.Millisecond
 	backoffMax    = 30 * time.Second
 	backoffFactor = 2
+
+	startProbeInterval = 200 * time.Millisecond
 )
 
 // tsnetServer is the small subset of *tsnet.Server we use, kept narrow so
@@ -260,7 +262,7 @@ func startAndProbe(ctx context.Context, server tsnetServer, timeout time.Duratio
 		return state, startErr
 	}
 
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(startProbeInterval)
 	defer ticker.Stop()
 
 	var lastState string
