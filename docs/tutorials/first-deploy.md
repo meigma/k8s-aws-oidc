@@ -40,7 +40,7 @@ For the examples below, export a small set of values:
 export CLUSTER_NAME=oidc-demo
 export ISSUER_URL=https://oidc.example.tailnet.ts.net
 export TS_HOSTNAME=oidc-example
-export TS_TAG=tag:cat-k8s-oidc
+export TS_TAG=tag:k8s-oidc
 export NAMESPACE=demo
 export SERVICE_ACCOUNT=demo-app
 export ROLE_NAME=demo-app-role
@@ -72,11 +72,11 @@ At minimum, your tailnet policy needs entries like:
 ```json
 {
   "tagOwners": {
-    "tag:cat-k8s-oidc": ["group:admin"]
+    "tag:k8s-oidc": ["group:admin"]
   },
   "nodeAttrs": [
     {
-      "target": ["tag:cat-k8s-oidc"],
+      "target": ["tag:k8s-oidc"],
       "attr": ["funnel"]
     }
   ]
