@@ -225,6 +225,8 @@ jobs:
       - name: Publish Helm Chart
         id: chart
         run: |
+          set -euo pipefail
+
           version="${{ steps.version.outputs.value }}"
           chart_name="ghcr.io/meigma/k8s-aws-oidc-chart"
           chart_package="dist/k8s-aws-oidc-chart-${version}.tgz"
@@ -234,10 +236,14 @@ jobs:
             --app-version "${version}" \
             -d dist/
 
-          push_output="$(helm push "${chart_package}" oci://ghcr.io/meigma)"
+          push_output="$(helm push "${chart_package}" oci://ghcr.io/meigma 2>&1)"
           printf '%s\n' "${push_output}"
 
-          digest="$(printf '%s\n' "${push_output}" | awk '/^Digest: / { print $2 }')"
+          digest="$(
+            printf '%s\n' "${push_output}" |
+              sed -E 's/\x1b\[[0-9;]*m//g' |
+              awk '/^[[:space:]]*Digest:[[:space:]]+/ { print $2 }'
+          )"
           if [ -z "${digest}" ]; then
             echo "failed to parse Helm chart digest" >&2
             exit 1
