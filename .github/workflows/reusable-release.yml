@@ -75,15 +75,43 @@ jobs:
         with:
           distribution: goreleaser
           version: v2.14.3
-          args: release --clean --skip=announce,publish,sign
+          args: release --snapshot --clean --skip=announce,publish,sign,sbom
         env:
           GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.tag }}
           GORELEASER_DISABLE_GITHUB_RELEASE: "true"
 
+      - name: Resolve Local Scan Images
+        id: local-images
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          amd64_image="$(
+            jq -er '
+              map(select(.type == "Docker Image" and (.name | endswith("-amd64")))) |
+              first.name // error("amd64 image not found")
+            ' dist/artifacts.json
+          )"
+
+          arm64_image="$(
+            jq -er '
+              map(select(.type == "Docker Image" and (.name | endswith("-arm64")))) |
+              first.name // error("arm64 image not found")
+            ' dist/artifacts.json
+          )"
+
+          printf 'local amd64 image: %s\n' "${amd64_image}"
+          printf 'local arm64 image: %s\n' "${arm64_image}"
+
+          {
+            echo "amd64=${amd64_image}"
+            echo "arm64=${arm64_image}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Scan AMD64 Image With Trivy
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
-          image-ref: ghcr.io/meigma/k8s-aws-oidc:${{ steps.version.outputs.value }}-amd64
+          image-ref: ${{ steps.local-images.outputs.amd64 }}
           format: table
           exit-code: "1"
           vuln-type: os,library
@@ -92,7 +120,7 @@ jobs:
       - name: Scan ARM64 Image With Trivy
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
-          image-ref: ghcr.io/meigma/k8s-aws-oidc:${{ steps.version.outputs.value }}-arm64
+          image-ref: ${{ steps.local-images.outputs.arm64 }}
           format: table
           exit-code: "1"
           vuln-type: os,library
