@@ -54,7 +54,12 @@ func (r *realServer) Start(ctx context.Context) error {
 			Ephemeral: false,
 		}
 	}
-	if _, err := r.srv.Up(ctx); err != nil {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if err := r.srv.Start(); err != nil {
 		return err
 	}
 	return nil

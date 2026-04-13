@@ -5,6 +5,8 @@ $schema: 'https://moonrepo.dev/schemas/workspace.json'
 # remain stable as the workspace grows.
 projects:
   root: '.'
+  docs: 'docs'
+  terraform: 'terraform'
 
 vcs:
   client: 'git'
