@@ -5,6 +5,10 @@ project_name: k8s-aws-oidc
 
 release:
   disable: "{{ .Env.GORELEASER_DISABLE_GITHUB_RELEASE }}"
+  draft: true
+  use_existing_draft: true
+  replace_existing_artifacts: true
+  mode: keep-existing
 
 gomod:
   proxy: true
@@ -65,6 +69,9 @@ docker_signs:
       - sign
       - "${artifact}@${digest}"
       - "--yes"
+
+snapshot:
+  version_template: "{{ .Tag }}-dev"
 
 dockers_v2:
   - id: oidc-proxy

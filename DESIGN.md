@@ -172,7 +172,7 @@ The workspace defines task inheritance via tags (mirroring the catalyst-platform
 
 A single `release-please-config.json` with `release-type: simple` and a single root package. Tags are formatted `vX.Y.Z` (no component prefix; this is a single-package repo). Conventional Commits drive version bumps (`feat:` → minor, `fix:` → patch, `feat!:` or `BREAKING CHANGE:` → major).
 
-The release-please workflow runs on push to `master` and maintains a release PR. When the PR merges, release-please creates the tag, which triggers the release workflow.
+The release-please workflow runs on push to `master` and maintains a release PR. When the PR merges, release-please force-creates the tag and an initial draft GitHub Release. This repo keeps immutable releases enabled, so that draft is the handoff point: the tag-triggered release workflow uploads artifacts into the existing draft, runs attestations, and publishes the draft only after the trusted release workflow succeeds. If a repository tag ruleset exists, the GitHub App used by release-please must be on the bypass list or tag creation fails.
 
 ### B3. GoReleaser for build and publish
 
@@ -197,10 +197,10 @@ SLSA BL3 requires the build to run via a reusable workflow and the attestations 
   release-rehearsal.yml  # trusted manual caller — synthetic version full-dress rehearsal
 ```
 
-- **`release.yml` `release` job**: invokes `./.github/workflows/reusable-release.yml` with `contents: write`, `packages: write`, `id-token: write`, `attestations: write`, and `artifact-metadata: write`.
+- **`release.yml` caller jobs**: first verify that `release-please` already created a draft GitHub Release for the pushed tag, then invoke `./.github/workflows/reusable-release.yml`, and finally publish that draft only after the reusable workflow and its attestation jobs complete.
 - **`release-rehearsal.yml` `rehearsal` job**: computes a synthetic SemVer such as `0.0.0-rc.<run>.<sha>`, invokes the same reusable release workflow, publishes/signs/attests the image and chart to GHCR under throwaway tags, and skips GitHub Release creation/assets. This is the trusted dress rehearsal path before cutting a real tag.
 - **`reusable-release.yml` `scan-local` job**: checkout, setup-go, qemu/buildx, syft, `goreleaser release --clean --skip=announce,publish,sign`, then Trivy scans the locally built `-amd64` and `-arm64` image refs and fails on `CRITICAL,HIGH`.
-- **`reusable-release.yml` `publish` job**: reruns `goreleaser release --clean`, signs `checksums.txt` and the published image via GoReleaser/cosign, packages/pushes/signs the Helm chart, generates `dist/checksums.txt` and `dist/digests.txt`, creates an image SBOM with syft, uploads that SBOM to the GitHub Release, and attaches it to GHCR as an OCI referrer.
+- **`reusable-release.yml` `publish` job**: reruns `goreleaser release --clean`, reusing the existing draft GitHub Release that `release-please` created for the tag; it signs `checksums.txt` and the published image via GoReleaser/cosign, packages/pushes/signs the Helm chart, generates `dist/checksums.txt` and `dist/digests.txt`, creates an image SBOM with syft, uploads that SBOM to the GitHub Release, and attaches it to GHCR as an OCI referrer.
 - **`reusable-release.yml` `attest-binaries` job**: runs `actions/attest@v4` against `dist/checksums.txt`.
 - **`reusable-release.yml` `attest-oci` job**: runs `actions/attest@v4` with `subject-name`/`subject-digest` for the published image and chart, pushing the provenance attestations to the registry.
 

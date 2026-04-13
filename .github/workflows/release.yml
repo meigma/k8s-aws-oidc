@@ -12,7 +12,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-draft-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # release-please must create the draft first. GoReleaser uploads into that
+      # existing draft so immutable releases never need post-publish mutation.
+      - name: Verify draft release handoff
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          release_json="$(gh release view "${GITHUB_REF_NAME}" --json tagName,isDraft,url)"
+          tag_name="$(jq -r '.tagName' <<<"${release_json}")"
+          is_draft="$(jq -r '.isDraft' <<<"${release_json}")"
+          release_url="$(jq -r '.url' <<<"${release_json}")"
+
+          printf 'draft release: %s\n' "${release_url}"
+
+          if [[ "${tag_name}" != "${GITHUB_REF_NAME}" ]]; then
+            echo "release tag mismatch: expected ${GITHUB_REF_NAME}, got ${tag_name}" >&2
+            exit 1
+          fi
+
+          if [[ "${is_draft}" != "true" ]]; then
+            echo "release ${GITHUB_REF_NAME} is not a draft release" >&2
+            exit 1
+          fi
+
   release:
+    needs: verify-draft-release
     uses: ./.github/workflows/reusable-release.yml
     permissions:
       contents: write
@@ -22,3 +54,17 @@ jobs:
       artifact-metadata: write
     secrets:
       release_token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-draft-release:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release edit "${GITHUB_REF_NAME}" --draft=false
