@@ -15,7 +15,7 @@ jobs:
   verify-draft-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       # release-please must create the draft first. GoReleaser uploads into that
       # existing draft so immutable releases never need post-publish mutation.
@@ -26,12 +26,32 @@ jobs:
         run: |
           set -euo pipefail
 
-          release_json="$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json tagName,isDraft,url)"
-          tag_name="$(jq -r '.tagName' <<<"${release_json}")"
-          is_draft="$(jq -r '.isDraft' <<<"${release_json}")"
-          release_url="$(jq -r '.url' <<<"${release_json}")"
+          release_json=""
+          for attempt in $(seq 1 24); do
+            releases_json="$(gh api "/repos/${GITHUB_REPOSITORY}/releases?per_page=100")"
+            release_json="$(jq -cer --arg tag "${GITHUB_REF_NAME}" '
+              map(select(.tag_name == $tag and .draft == true)) | first
+            ' <<<"${releases_json}" 2>/dev/null || true)"
 
-          printf 'draft release: %s\n' "${release_url}"
+            if [[ -n "${release_json}" && "${release_json}" != "null" ]]; then
+              break
+            fi
+
+            printf 'waiting for draft release handoff (%s/24)\n' "${attempt}"
+            sleep 5
+          done
+
+          if [[ -z "${release_json}" || "${release_json}" == "null" ]]; then
+            echo "draft release ${GITHUB_REF_NAME} not found" >&2
+            exit 1
+          fi
+
+          release_id="$(jq -r '.id' <<<"${release_json}")"
+          tag_name="$(jq -r '.tag_name' <<<"${release_json}")"
+          is_draft="$(jq -r '.draft' <<<"${release_json}")"
+          release_url="$(jq -r '.html_url' <<<"${release_json}")"
+
+          printf 'draft release %s: %s\n' "${release_id}" "${release_url}"
 
           if [[ "${tag_name}" != "${GITHUB_REF_NAME}" ]]; then
             echo "release tag mismatch: expected ${GITHUB_REF_NAME}, got ${tag_name}" >&2
@@ -67,4 +87,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false
+
+          release_id="$(
+            gh api "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" |
+              jq -er --arg tag "${GITHUB_REF_NAME}" '
+                map(select(.tag_name == $tag)) | first.id // error("release not found")
+              '
+          )"
+
+          gh api \
+            --method PATCH \
+            "/repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -f draft=false \
+            >/dev/null
