@@ -28,7 +28,9 @@ jobs:
 
       - name: Determine Snapshot Version
         id: snapshot-version
-        run: echo "value=0.0.0-SNAPSHOT-$(git rev-parse --short HEAD)" >> "${GITHUB_OUTPUT}"
+        run: |
+          latest_tag="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)"
+          echo "value=${latest_tag}-dev" >> "${GITHUB_OUTPUT}"
 
       - name: Set Up Helm
         uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
