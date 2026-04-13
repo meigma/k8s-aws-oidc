@@ -353,6 +353,13 @@ jobs:
           name: release-attestation-inputs
           path: attestation-inputs
 
+      - name: Log In To GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.release_token }}
+
       - name: Load OCI Metadata
         id: metadata
         run: |
