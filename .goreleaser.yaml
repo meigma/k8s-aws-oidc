@@ -11,7 +11,9 @@ release:
   mode: keep-existing
 
 gomod:
-  proxy: true
+  # Build from the checked out source tree so fresh tags and rehearsal-only
+  # versions do not depend on proxy.golang.org being indexed first.
+  proxy: false
   env:
     - GOPROXY=https://proxy.golang.org,direct
     - GOSUMDB=sum.golang.org
