@@ -35,7 +35,7 @@ func TestNew_RegistersExpectedMetricFamilies(t *testing.T) {
 		"oidc_proxy_jwks_serving_stale_total",
 		"oidc_proxy_jwks_age_seconds",
 		"oidc_proxy_jwks_ready",
-		"oidc_proxy_jwks_kid_count",
+		"oidc_proxy_jwks_keys",
 		"oidc_proxy_tsnet_start_total",
 		"oidc_proxy_tsnet_state_transitions_total",
 		"oidc_proxy_public_listener_restarts_total",
@@ -60,21 +60,29 @@ func TestMetrics_ObserveHTTPRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Gather: %v", err)
 	}
-	requests := metricWithLabels(t, metricFamilyByName(families)["oidc_proxy_http_requests_total"], map[string]string{
-		"route":       "discovery",
-		"method":      "GET",
-		"decision":    "served",
-		"status_code": "200",
-	})
+	requests := metricWithLabels(
+		t,
+		metricFamilyByName(families)["oidc_proxy_http_requests_total"],
+		map[string]string{
+			"route":       "discovery",
+			"method":      "GET",
+			"decision":    "served",
+			"status_code": "200",
+		},
+	)
 	if got := requests.GetCounter().GetValue(); got != 1 {
 		t.Fatalf("requests_total = %v", got)
 	}
 
-	latency := metricWithLabels(t, metricFamilyByName(families)["oidc_proxy_http_request_duration_seconds"], map[string]string{
-		"route":    "discovery",
-		"method":   "GET",
-		"decision": "served",
-	})
+	latency := metricWithLabels(
+		t,
+		metricFamilyByName(families)["oidc_proxy_http_request_duration_seconds"],
+		map[string]string{
+			"route":    "discovery",
+			"method":   "GET",
+			"decision": "served",
+		},
+	)
 	if got := latency.GetHistogram().GetSampleCount(); got != 1 {
 		t.Fatalf("latency sample_count = %d", got)
 	}
@@ -95,8 +103,8 @@ func TestMetrics_JWKSStateGaugesTrackFreshness(t *testing.T) {
 	if got := gaugeValue(byName["oidc_proxy_jwks_ready"]); got != 1 {
 		t.Fatalf("jwks_ready = %v", got)
 	}
-	if got := gaugeValue(byName["oidc_proxy_jwks_kid_count"]); got != 3 {
-		t.Fatalf("jwks_kid_count = %v", got)
+	if got := gaugeValue(byName["oidc_proxy_jwks_keys"]); got != 3 {
+		t.Fatalf("jwks_keys = %v", got)
 	}
 
 	now = now.Add(3 * time.Minute)
@@ -108,8 +116,8 @@ func TestMetrics_JWKSStateGaugesTrackFreshness(t *testing.T) {
 	if got := gaugeValue(byName["oidc_proxy_jwks_ready"]); got != 0 {
 		t.Fatalf("jwks_ready after expiry = %v", got)
 	}
-	if got := gaugeValue(byName["oidc_proxy_jwks_kid_count"]); got != 0 {
-		t.Fatalf("jwks_kid_count after expiry = %v", got)
+	if got := gaugeValue(byName["oidc_proxy_jwks_keys"]); got != 0 {
+		t.Fatalf("jwks_keys after expiry = %v", got)
 	}
 }
 
@@ -126,8 +134,8 @@ func TestMetrics_LabelsAreSanitized(t *testing.T) {
 	}
 
 	for _, family := range families {
-		for _, metric := range family.Metric {
-			for _, label := range metric.Label {
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
 				if strings.Contains(label.GetValue(), "Bearer ") {
 					t.Fatalf("label %s contains bearer token material", label.GetName())
 				}
@@ -150,9 +158,13 @@ func metricFamilyByName(families []*dto.MetricFamily) map[string]*dto.MetricFami
 	return out
 }
 
-func metricWithLabels(t *testing.T, family *dto.MetricFamily, labels map[string]string) *dto.Metric {
+func metricWithLabels(
+	t *testing.T,
+	family *dto.MetricFamily,
+	labels map[string]string,
+) *dto.Metric {
 	t.Helper()
-	for _, metric := range family.Metric {
+	for _, metric := range family.GetMetric() {
 		if labelsMatch(metric, labels) {
 			return metric
 		}
@@ -162,10 +174,10 @@ func metricWithLabels(t *testing.T, family *dto.MetricFamily, labels map[string]
 }
 
 func labelsMatch(metric *dto.Metric, labels map[string]string) bool {
-	if len(metric.Label) != len(labels) {
+	if len(metric.GetLabel()) != len(labels) {
 		return false
 	}
-	for _, label := range metric.Label {
+	for _, label := range metric.GetLabel() {
 		if labels[label.GetName()] != label.GetValue() {
 			return false
 		}
@@ -174,8 +186,8 @@ func labelsMatch(metric *dto.Metric, labels map[string]string) bool {
 }
 
 func gaugeValue(family *dto.MetricFamily) float64 {
-	if len(family.Metric) == 0 {
+	if len(family.GetMetric()) == 0 {
 		return 0
 	}
-	return family.Metric[0].GetGauge().GetValue()
+	return family.GetMetric()[0].GetGauge().GetValue()
 }

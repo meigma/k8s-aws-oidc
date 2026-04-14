@@ -12,6 +12,7 @@ import (
 	"github.com/meigma/k8s-aws-oidc/internal/logx"
 	"github.com/meigma/k8s-aws-oidc/internal/metrics"
 	"golang.org/x/oauth2/clientcredentials"
+
 	//nolint:staticcheck // SA1019: tailscale.com/client/tailscale is bundled with tsnet (already a transitive dep) and the v2 client lives in a separate module. Isolated behind AuthKeyMinter so a future swap is one file.
 	"tailscale.com/client/tailscale"
 )

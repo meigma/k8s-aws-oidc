@@ -298,7 +298,7 @@ func TestCache_LogsLifecycleEvents(t *testing.T) {
 		`oidc_proxy_jwks_refresh_total{error_kind="fetch_failed",result="failure"}`,
 		`oidc_proxy_jwks_serving_stale_total{error_kind="fetch_failed"}`,
 		"oidc_proxy_jwks_ready 1",
-		"oidc_proxy_jwks_kid_count 1",
+		"oidc_proxy_jwks_keys 1",
 	} {
 		if !strings.Contains(metricsBody, want) {
 			t.Fatalf("metrics body missing %q\n%s", want, metricsBody)

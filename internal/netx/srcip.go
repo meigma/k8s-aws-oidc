@@ -139,10 +139,7 @@ type AllowlistConfig struct {
 // allowlist. When disabled it is a pass-through; when enabled it returns 403
 // if the request has no captured source address or the source is not in any
 // configured CIDR (fail-closed).
-func Middleware(cfg AllowlistConfig, logger *slog.Logger) func(http.Handler) http.Handler {
-	if logger == nil {
-		logger = slog.Default()
-	}
+func Middleware(cfg AllowlistConfig, _ *slog.Logger) func(http.Handler) http.Handler {
 	if !cfg.Enabled {
 		return func(next http.Handler) http.Handler { return next }
 	}
@@ -192,6 +189,7 @@ func decisionFromStatus(status int) string {
 
 type auditResponseWriter struct {
 	http.ResponseWriter
+
 	code      int
 	wroteCode bool
 }

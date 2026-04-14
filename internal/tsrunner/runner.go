@@ -169,46 +169,110 @@ func Run(ctx context.Context, cfg Config, factory ServerFactory, minter AuthKeyM
 		if ctx.Err() != nil {
 			return nil
 		}
-		if server == nil {
-			server = factory()
-			verified = false
-		}
+		server, verified = ensureServer(server, verified, factory)
 
 		state, startErr := startAndProbe(ctx, server, cfg.StartTimeout)
 		if ctx.Err() != nil {
 			return nil
 		}
-		if state != "" && state != lastState {
-			logStateChange(ctx, logger, state)
-			if cfg.Metrics != nil {
-				cfg.Metrics.RecordTSNetStateTransition(state)
-			}
-			lastState = state
-		}
-		switch decideNext(state, startErr) {
-		case actionServe:
-			if cfg.Metrics != nil {
-				cfg.Metrics.RecordTSNetStart(metricsSuccess, "")
-			}
-			fatal := handleServe(ctx, cfg, server, &verified, &backoff)
-			_ = server.Close()
-			server = nil
-			if fatal != nil {
-				return fatal
-			}
-		case actionReauth:
-			server = handleReauth(ctx, logger, factory, minter, server, &backoff)
-			verified = false
-		case actionRetry:
-			if cfg.Metrics != nil {
-				cfg.Metrics.RecordTSNetStart(metricsFailure, runnerErrorKind(startErr))
-			}
-			logStartFailure(ctx, logger, state, startErr)
-			_ = backoff.sleep(ctx)
-			_ = server.Close()
-			server = nil
+		lastState = recordStateTransition(ctx, cfg, state, lastState)
+
+		nextServer, nextVerified, fatal := processLoopAction(
+			ctx,
+			cfg,
+			factory,
+			minter,
+			server,
+			verified,
+			&backoff,
+			state,
+			startErr,
+			logger,
+		)
+		server = nextServer
+		verified = nextVerified
+		if fatal != nil {
+			return fatal
 		}
 	}
+}
+
+func ensureServer(server tsnetServer, verified bool, factory ServerFactory) (tsnetServer, bool) {
+	if server != nil {
+		return server, verified
+	}
+	return factory(), false
+}
+
+func recordStateTransition(ctx context.Context, cfg Config, state, lastState string) string {
+	if state == "" || state == lastState {
+		return lastState
+	}
+	logStateChange(ctx, cfg.Logger, state)
+	if cfg.Metrics != nil {
+		cfg.Metrics.RecordTSNetStateTransition(state)
+	}
+	return state
+}
+
+func processLoopAction(
+	ctx context.Context,
+	cfg Config,
+	factory ServerFactory,
+	minter AuthKeyMinter,
+	server tsnetServer,
+	verified bool,
+	backoff *backoffState,
+	state string,
+	startErr error,
+	logger *slog.Logger,
+) (tsnetServer, bool, error) {
+	switch decideNext(state, startErr) {
+	case actionServe:
+		return processServeAction(ctx, cfg, server, verified, backoff)
+	case actionReauth:
+		return handleReauth(ctx, factory, minter, server, backoff), false, nil
+	case actionRetry:
+		return processRetryAction(ctx, cfg, server, backoff, state, startErr, logger)
+	default:
+		return server, verified, nil
+	}
+}
+
+func processServeAction(
+	ctx context.Context,
+	cfg Config,
+	server tsnetServer,
+	verified bool,
+	backoff *backoffState,
+) (tsnetServer, bool, error) {
+	if cfg.Metrics != nil {
+		cfg.Metrics.RecordTSNetStart(metricsSuccess, "")
+	}
+	fatal := handleServe(ctx, cfg, server, &verified, backoff)
+	_ = server.Close()
+	if fatal != nil {
+		return nil, verified, fatal
+	}
+	return nil, verified, nil
+}
+
+func processRetryAction(
+	ctx context.Context,
+	cfg Config,
+	server tsnetServer,
+	backoff *backoffState,
+	state string,
+	startErr error,
+	logger *slog.Logger,
+) (tsnetServer, bool, error) {
+	if cfg.Metrics != nil {
+		cfg.Metrics.RecordTSNetStart(metricsFailure, runnerErrorKind(startErr))
+	}
+	logStartFailure(ctx, logger, state, startErr)
+	_ = backoff.sleep(ctx)
+	_ = server.Close()
+	return nil, false, nil
 }
 
 // handleServe runs one serve cycle. A non-nil return is a fatal error that
@@ -355,7 +419,6 @@ func decideNext(state string, startErr error) loopAction {
 // returns the existing server unchanged so the outer loop will retry.
 func handleReauth(
 	ctx context.Context,
-	logger *slog.Logger,
 	factory ServerFactory,
 	minter AuthKeyMinter,
 	server tsnetServer,

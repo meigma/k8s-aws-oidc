@@ -33,30 +33,35 @@ func main() {
 	}
 }
 
-func run(logger *slog.Logger) (err error) {
+func run(logger *slog.Logger) error {
 	activeLogger := logger
+	var runErr error
 	defer func() {
 		attrs := []slog.Attr{slog.String("result", "success")}
 		level := slog.LevelInfo
-		if err != nil {
+		if runErr != nil {
 			level = slog.LevelError
 			attrs = append(attrs,
 				slog.String("result", "error"),
-				slog.String("error_kind", processErrorKind(err)),
-				slog.String("error", processErrorSummary(err)),
+				slog.String("error_kind", processErrorKind(runErr)),
+				slog.String("error", processErrorSummary(runErr)),
 			)
 		}
 		logx.Log(context.Background(), activeLogger, level, "process", "process_stop", "process stopping", attrs...)
 	}()
+	finish := func(err error) error {
+		runErr = err
+		return err
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("config: %w", err)
+		return finish(fmt.Errorf("config: %w", err))
 	}
 
 	logger, err = logx.NewLogger(os.Stderr, cfg.LogFormat, &slog.HandlerOptions{Level: cfg.LogLevel})
 	if err != nil {
-		return fmt.Errorf("logger: %w", err)
+		return finish(fmt.Errorf("logger: %w", err))
 	}
 	activeLogger = logger
 	slog.SetDefault(logger)
@@ -66,7 +71,7 @@ func run(logger *slog.Logger) (err error) {
 
 	issuerURL, err := url.Parse(cfg.IssuerURL)
 	if err != nil {
-		return fmt.Errorf("parse issuer URL: %w", err)
+		return finish(fmt.Errorf("parse issuer URL: %w", err))
 	}
 
 	logx.Info(ctx, logger, "process", "process_start", "process starting",
@@ -83,19 +88,19 @@ func run(logger *slog.Logger) (err error) {
 
 	cache, err := startCache(ctx, cfg, logger, metricsRecorder)
 	if err != nil {
-		return err
+		return finish(err)
 	}
 
 	var publicReady atomic.Bool
 	handler, err := oidc.NewHandler(cfg.IssuerURL, cfg.DiscoveryMaxAgeHeader, cache, publicReady.Load, logger)
 	if err != nil {
-		return fmt.Errorf("handler: %w", err)
+		return finish(fmt.Errorf("handler: %w", err))
 	}
 	handler.MetricsHandler = metricsRecorder.Handler()
 
 	runnerCfg, err := buildRunnerConfig(cfg, handler, publicReady.Store, logger, metricsRecorder)
 	if err != nil {
-		return err
+		return finish(err)
 	}
 
 	factory := tsrunner.NewRealServerFactory(tsrunner.RealServerConfig{
@@ -111,7 +116,7 @@ func run(logger *slog.Logger) (err error) {
 		Metrics:      metricsRecorder,
 	}
 
-	return serveAll(ctx, stop, cfg, handler, runnerCfg, factory, minter, logger, metricsRecorder)
+	return finish(serveAll(ctx, stop, cfg, handler, runnerCfg, factory, minter, logger, metricsRecorder))
 }
 
 // startCache builds the HTTP fetcher, primes the JWKS cache synchronously so

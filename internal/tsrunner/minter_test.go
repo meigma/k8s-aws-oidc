@@ -39,7 +39,10 @@ func (f *fakeTSAPI) handler(t *testing.T) http.Handler {
 			t.Errorf("oauth/token body missing grant_type: %s", body)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"access_token":"oauth-access-token","token_type":"Bearer","expires_in":3600}`)
+		_, _ = io.WriteString(
+			w,
+			`{"access_token":"oauth-access-token","token_type":"Bearer","expires_in":3600}`,
+		)
 	})
 	mux.HandleFunc("/api/v2/tailnet/-/keys", func(w http.ResponseWriter, r *http.Request) {
 		f.keyCalls.Add(1)
@@ -184,8 +187,8 @@ func TestOAuthMinter_LogsAreStructuredAndSanitized(t *testing.T) {
 
 	var record map[string]any
 	line := strings.TrimSpace(buf.String())
-	if err := json.Unmarshal([]byte(line), &record); err != nil {
-		t.Fatalf("unmarshal log: %v", err)
+	if unmarshalErr := json.Unmarshal([]byte(line), &record); unmarshalErr != nil {
+		t.Fatalf("unmarshal log: %v", unmarshalErr)
 	}
 	if got := record["event"]; got != "auth_key_mint_success" {
 		t.Fatalf("event = %v", got)
@@ -200,7 +203,10 @@ func TestOAuthMinter_LogsAreStructuredAndSanitized(t *testing.T) {
 		t.Fatal("log contains minted auth key")
 	}
 	metricsBody := scrapeMinterMetrics(t, recorder)
-	if !strings.Contains(metricsBody, `oidc_proxy_auth_key_mint_total{error_kind="none",result="success"} 1`) {
+	if !strings.Contains(
+		metricsBody,
+		`oidc_proxy_auth_key_mint_total{error_kind="none",result="success"} 1`,
+	) {
 		t.Fatalf("metrics body missing mint success counter\n%s", metricsBody)
 	}
 }
@@ -209,7 +215,10 @@ func TestOAuthMinter_FailureLogIsSanitized(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v2/oauth/token", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"access_token":"oauth-access-token","token_type":"Bearer","expires_in":3600}`)
+		_, _ = io.WriteString(
+			w,
+			`{"access_token":"oauth-access-token","token_type":"Bearer","expires_in":3600}`,
+		)
 	})
 	mux.HandleFunc("/api/v2/tailnet/-/keys", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "tskey-auth-secret boom", http.StatusInternalServerError)
@@ -235,8 +244,8 @@ func TestOAuthMinter_FailureLogIsSanitized(t *testing.T) {
 
 	var record map[string]any
 	line := strings.TrimSpace(buf.String())
-	if err := json.Unmarshal([]byte(line), &record); err != nil {
-		t.Fatalf("unmarshal log: %v", err)
+	if unmarshalErr := json.Unmarshal([]byte(line), &record); unmarshalErr != nil {
+		t.Fatalf("unmarshal log: %v", unmarshalErr)
 	}
 	if got := record["event"]; got != "auth_key_mint_failure" {
 		t.Fatalf("event = %v", got)
@@ -248,7 +257,10 @@ func TestOAuthMinter_FailureLogIsSanitized(t *testing.T) {
 		t.Fatal("log contains auth key")
 	}
 	metricsBody := scrapeMinterMetrics(t, recorder)
-	if !strings.Contains(metricsBody, `oidc_proxy_auth_key_mint_total{error_kind="create_auth_key_failed",result="failure"} 1`) {
+	if !strings.Contains(
+		metricsBody,
+		`oidc_proxy_auth_key_mint_total{error_kind="create_auth_key_failed",result="failure"} 1`,
+	) {
 		t.Fatalf("metrics body missing mint failure counter\n%s", metricsBody)
 	}
 	if strings.Contains(metricsBody, "tskey-auth-secret") {

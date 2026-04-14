@@ -55,103 +55,112 @@ func New(jwksStaleWindow time.Duration) *Metrics {
 		registry:        prometheus.NewRegistry(),
 		now:             time.Now,
 		jwksStaleWindow: jwksStaleWindow,
-		httpRequestsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "http_requests_total",
-				Help:      "Total number of public HTTP requests handled by the bridge.",
-			},
-			[]string{"route", "method", "decision", "status_code"},
-		),
-		httpRequestDuration: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Name:      "http_request_duration_seconds",
-				Help:      "Latency of public HTTP requests handled by the bridge.",
-				Buckets:   prometheus.DefBuckets,
-			},
-			[]string{"route", "method", "decision"},
-		),
-		jwksPrimeTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "jwks_prime_total",
-				Help:      "Total number of JWKS cache prime attempts.",
-			},
-			[]string{"result"},
-		),
-		jwksRefreshTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "jwks_refresh_total",
-				Help:      "Total number of JWKS cache refresh attempts.",
-			},
-			[]string{"result", "error_kind"},
-		),
-		jwksServingStaleTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "jwks_serving_stale_total",
-				Help:      "Total number of times the bridge served stale JWKS data.",
-			},
-			[]string{"error_kind"},
-		),
-		tsnetStartTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "tsnet_start_total",
-				Help:      "Total number of tsnet start attempts.",
-			},
-			[]string{"result", "error_kind"},
-		),
-		tsnetStateTransitions: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "tsnet_state_transitions_total",
-				Help:      "Total number of observed tsnet backend state transitions.",
-			},
-			[]string{"state"},
-		),
-		publicListenerRestarts: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "public_listener_restarts_total",
-				Help:      "Total number of public listener restarts.",
-			},
-			[]string{"reason"},
-		),
-		issuerHostVerification: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "issuer_host_verification_total",
-				Help:      "Total number of issuer host verification outcomes.",
-			},
-			[]string{"result"},
-		),
-		authKeyMintTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "auth_key_mint_total",
-				Help:      "Total number of auth key mint attempts.",
-			},
-			[]string{"result", "error_kind"},
-		),
-		processStartTimeSeconds: prometheus.NewGauge(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Name:      "process_start_time_seconds",
-				Help:      "Unix time when the bridge process started.",
-			},
-		),
-		healthServerStartTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Name:      "health_server_start_total",
-				Help:      "Total number of times the internal health/metrics server started.",
-			},
-		),
 	}
+	m.initCollectors()
+	m.registerCollectors()
+	m.handler = promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
+	return m
+}
 
+func (m *Metrics) initCollectors() {
+	m.httpRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "http_requests_total",
+			Help:      "Total number of public HTTP requests handled by the bridge.",
+		},
+		[]string{"route", "method", "decision", "status_code"},
+	)
+	m.httpRequestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "http_request_duration_seconds",
+			Help:      "Latency of public HTTP requests handled by the bridge.",
+			Buckets:   prometheus.DefBuckets,
+		},
+		[]string{"route", "method", "decision"},
+	)
+	m.jwksPrimeTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "jwks_prime_total",
+			Help:      "Total number of JWKS cache prime attempts.",
+		},
+		[]string{"result"},
+	)
+	m.jwksRefreshTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "jwks_refresh_total",
+			Help:      "Total number of JWKS cache refresh attempts.",
+		},
+		[]string{"result", "error_kind"},
+	)
+	m.jwksServingStaleTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "jwks_serving_stale_total",
+			Help:      "Total number of times the bridge served stale JWKS data.",
+		},
+		[]string{"error_kind"},
+	)
+	m.tsnetStartTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "tsnet_start_total",
+			Help:      "Total number of tsnet start attempts.",
+		},
+		[]string{"result", "error_kind"},
+	)
+	m.tsnetStateTransitions = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "tsnet_state_transitions_total",
+			Help:      "Total number of observed tsnet backend state transitions.",
+		},
+		[]string{"state"},
+	)
+	m.publicListenerRestarts = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "public_listener_restarts_total",
+			Help:      "Total number of public listener restarts.",
+		},
+		[]string{"reason"},
+	)
+	m.issuerHostVerification = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "issuer_host_verification_total",
+			Help:      "Total number of issuer host verification outcomes.",
+		},
+		[]string{"result"},
+	)
+	m.authKeyMintTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "auth_key_mint_total",
+			Help:      "Total number of auth key mint attempts.",
+		},
+		[]string{"result", "error_kind"},
+	)
+	m.processStartTimeSeconds = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "process_start_time_seconds",
+			Help:      "Unix time when the bridge process started.",
+		},
+	)
+	m.healthServerStartTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "health_server_start_total",
+			Help:      "Total number of times the internal health/metrics server started.",
+		},
+	)
+}
+
+func (m *Metrics) registerCollectors() {
 	buildInfo := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: namespace,
@@ -160,7 +169,6 @@ func New(jwksStaleWindow time.Duration) *Metrics {
 		},
 		[]string{"version", "go_version"},
 	)
-
 	buildInfo.WithLabelValues(buildVersion(), runtime.Version()).Set(buildInfoValue)
 	m.processStartTimeSeconds.Set(float64(m.now().Unix()))
 
@@ -199,15 +207,12 @@ func New(jwksStaleWindow time.Duration) *Metrics {
 		prometheus.NewGaugeFunc(
 			prometheus.GaugeOpts{
 				Namespace: namespace,
-				Name:      "jwks_kid_count",
-				Help:      "Number of JWK key IDs in the currently served JWKS payload.",
+				Name:      "jwks_keys",
+				Help:      "Number of JWK keys in the currently served JWKS payload.",
 			},
 			m.jwksKidCountValue,
 		),
 	)
-
-	m.handler = promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
-	return m
 }
 
 // Handler returns the Prometheus scrape handler for the registry.
