@@ -239,7 +239,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: aws
-      image: public.ecr.aws/aws-cli/aws-cli:2
+      image: amazon/aws-cli:latest
       command: ["sh", "-c", "sleep 3600"]
       env:
         - name: AWS_ROLE_ARN

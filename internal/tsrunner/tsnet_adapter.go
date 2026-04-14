@@ -109,6 +109,10 @@ func (r *realServer) SetAuthKey(key string) {
 	}
 }
 
+func (r *realServer) HasAuthKey() bool {
+	return r.authKey != ""
+}
+
 func (r *realServer) Close() error {
 	if r.srv == nil {
 		return nil

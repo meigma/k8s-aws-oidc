@@ -170,6 +170,18 @@ moon run terraform:lint
 moon run terraform:validate
 ```
 
+Run the local end-to-end smoke harness when you can satisfy the live
+prerequisites locally:
+
+```bash
+aws-vault exec --no-session <profile> -- just up
+just down
+```
+
+The smoke harness is documented in
+[Local smoke](https://k8s.oidc.meigma.dev/how-to/local-smoke) and keeps its
+working state under `tmp/smoke/`.
+
 Work on the documentation site locally with Node.js 20 or newer:
 
 ```bash

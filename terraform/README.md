@@ -61,5 +61,5 @@ moon run terraform:lint
 moon run terraform:validate
 ```
 
-These tasks are static quality checks only. Live AWS validation stays manual.
-
+These tasks are static quality checks only. For the repo-owned local live smoke
+path, use `just up` and `just down` from the repo root.

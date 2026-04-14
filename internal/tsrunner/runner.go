@@ -58,6 +58,9 @@ type tsnetServer interface {
 	// be safe to call only before Start (the real adapter recreates the
 	// underlying tsnet.Server when reauth is required).
 	SetAuthKey(key string)
+	// HasAuthKey reports whether this server instance has a non-empty auth key
+	// configured for its next Start attempt.
+	HasAuthKey() bool
 	// Close releases all resources held by the node.
 	Close() error
 }
@@ -168,6 +171,9 @@ func Run(ctx context.Context, cfg Config, factory ServerFactory, minter AuthKeyM
 		}
 
 		state, startErr := startAndProbe(ctx, server, cfg.StartTimeout)
+		if ctx.Err() != nil {
+			return nil
+		}
 		switch decideNext(state, startErr) {
 		case actionServe:
 			fatal := handleServe(ctx, cfg, server, &verified, &backoff)
@@ -264,6 +270,11 @@ func startAndProbe(ctx context.Context, server tsnetServer, timeout time.Duratio
 
 	ticker := time.NewTicker(startProbeInterval)
 	defer ticker.Stop()
+	authKeyApplied := server.HasAuthKey()
+	var timeoutCh <-chan struct{}
+	if !authKeyApplied {
+		timeoutCh = startCtx.Done()
+	}
 
 	var lastState string
 	for {
@@ -272,13 +283,23 @@ func startAndProbe(ctx context.Context, server tsnetServer, timeout time.Duratio
 		cancelProbe()
 		if err == nil && state != "" {
 			lastState = state
-			if state == BackendStateRunning || state == BackendStateNeedsLogin {
+			if state == BackendStateRunning {
+				return state, nil
+			}
+			// A brand new server with no persisted identity and no auth key is
+			// genuinely blocked on login, so reauth immediately. Once an auth
+			// key has been applied, keep polling until Running or timeout: tsnet
+			// can transiently report NeedsLogin while the control-plane
+			// registration kicked off by that auth key is still in flight.
+			if state == BackendStateNeedsLogin && !server.HasAuthKey() {
 				return state, nil
 			}
 		}
 
 		select {
-		case <-startCtx.Done():
+		case <-ctx.Done():
+			return lastState, ctx.Err()
+		case <-timeoutCh:
 			return lastState, startCtx.Err()
 		case <-ticker.C:
 		}
