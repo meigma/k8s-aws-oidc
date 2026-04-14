@@ -108,6 +108,12 @@ func (f *fakeServer) SetAuthKey(key string) {
 	}
 }
 
+func (f *fakeServer) HasAuthKey() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.authKey != ""
+}
+
 func (f *fakeServer) Close() error {
 	f.closeCalls.Add(1)
 	f.closed.Store(true)
@@ -382,7 +388,7 @@ func TestRun_ReauthFromCold(t *testing.T) {
 	}
 	minter := &fakeMinter{keys: []string{"tskey-fresh"}}
 
-	runOnce(t, factory, minter, 200*time.Millisecond)
+	runOnce(t, factory, minter, 700*time.Millisecond)
 
 	if minter.calls.Load() != 1 {
 		t.Errorf("minter calls = %d (want 1)", minter.calls.Load())
@@ -392,6 +398,40 @@ func TestRun_ReauthFromCold(t *testing.T) {
 	}
 	if servers[1].listenCalls.Load() == 0 {
 		t.Error("second server never listened")
+	}
+}
+
+func TestRun_ReauthWaitsForAuthKeyLoginToComplete(t *testing.T) {
+	server := newFakeServer(BackendStateNeedsLogin)
+	server.stateOnAuthKey = BackendStateNeedsLogin
+	var polls atomic.Int32
+	server.backendStateFn = func(_ context.Context) (string, error) {
+		if !server.HasAuthKey() {
+			return BackendStateNeedsLogin, nil
+		}
+		if polls.Add(1) < 3 {
+			return BackendStateNeedsLogin, nil
+		}
+		return BackendStateRunning, nil
+	}
+
+	factoryCalls := atomic.Int32{}
+	factory := func() tsnetServer {
+		factoryCalls.Add(1)
+		return server
+	}
+	minter := &fakeMinter{keys: []string{"tskey-fresh"}}
+
+	runOnce(t, factory, minter, 700*time.Millisecond)
+
+	if got := minter.calls.Load(); got != 1 {
+		t.Fatalf("minter calls = %d, want 1", got)
+	}
+	if got := factoryCalls.Load(); got != 2 {
+		t.Fatalf("factory calls = %d, want 2", got)
+	}
+	if server.listenCalls.Load() == 0 {
+		t.Fatal("server never reached ListenFunnel after auth key login")
 	}
 }
 
