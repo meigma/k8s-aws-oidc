@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.0](https://github.com/meigma/k8s-aws-oidc/compare/v1.0.0...v1.1.0) (2026-04-14)
+
+
+### Features
+
+* adds audit logging and Prometheus metrics for the OIDC bridge ([#28](https://github.com/meigma/k8s-aws-oidc/issues/28)) ([342e2eb](https://github.com/meigma/k8s-aws-oidc/commit/342e2eb02fed87c04080a4bc01afa75bdfcbd7b2))
+* adds leader-elected HA and smoke failover coverage ([#29](https://github.com/meigma/k8s-aws-oidc/issues/29)) ([67e0849](https://github.com/meigma/k8s-aws-oidc/commit/67e0849da43723893ea5b638f3a0f97f73f7845d))
+* adds optional Kyverno image verification and default Helm releases to digest-pinned images ([#25](https://github.com/meigma/k8s-aws-oidc/issues/25)) ([8c12b2d](https://github.com/meigma/k8s-aws-oidc/commit/8c12b2d1d6ce643574012840a55ea9302657fac7))
+
 ## 1.0.0 (2026-04-13)
 
 
