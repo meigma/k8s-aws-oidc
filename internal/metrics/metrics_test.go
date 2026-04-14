@@ -19,6 +19,9 @@ func TestNew_RegistersExpectedMetricFamilies(t *testing.T) {
 	m.RecordPublicListenerRestart("needs_login")
 	m.RecordIssuerHostVerification(resultSuccess)
 	m.RecordAuthKeyMint(resultSuccess, "")
+	m.RecordLeaderElectionTransition("leader")
+	m.SetLeader(true)
+	m.SetPublicReady(true)
 	m.RecordHealthServerStart()
 
 	families, err := m.Registry().Gather()
@@ -41,6 +44,9 @@ func TestNew_RegistersExpectedMetricFamilies(t *testing.T) {
 		"oidc_proxy_public_listener_restarts_total",
 		"oidc_proxy_issuer_host_verification_total",
 		"oidc_proxy_auth_key_mint_total",
+		"oidc_proxy_leader_election_transitions_total",
+		"oidc_proxy_leader",
+		"oidc_proxy_public_ready",
 		"oidc_proxy_process_start_time_seconds",
 		"oidc_proxy_health_server_start_total",
 	}
@@ -147,6 +153,33 @@ func TestMetrics_LabelsAreSanitized(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestMetrics_LeaderStateGauges(t *testing.T) {
+	m := New(2 * time.Minute)
+	m.SetLeader(true)
+	m.SetPublicReady(true)
+	m.RecordLeaderElectionTransition("leader")
+
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	byName := metricFamilyByName(families)
+	if got := gaugeValue(byName["oidc_proxy_leader"]); got != 1 {
+		t.Fatalf("leader = %v", got)
+	}
+	if got := gaugeValue(byName["oidc_proxy_public_ready"]); got != 1 {
+		t.Fatalf("public_ready = %v", got)
+	}
+	transition := metricWithLabels(
+		t,
+		byName["oidc_proxy_leader_election_transitions_total"],
+		map[string]string{"state": "leader"},
+	)
+	if got := transition.GetCounter().GetValue(); got != 1 {
+		t.Fatalf("leader_election_transitions_total = %v", got)
 	}
 }
 

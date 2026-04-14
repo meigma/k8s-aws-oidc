@@ -24,4 +24,16 @@ rules:
       - get
       - create
       - patch
+  {{- if .Values.leaderElection.enabled }}
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    resourceNames:
+      - {{ include "k8s-aws-oidc-chart.leaseName" . }}
+    verbs:
+      - get
+      - update
+      - patch
+  {{- end }}
 {{- end }}

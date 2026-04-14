@@ -40,6 +40,11 @@ It validates and re-emits only the required signing fields.
 
 ## Health
 
-`GET /healthz` is served on the internal listener only. It is not part of the
-public OIDC surface.
+The internal listener serves:
 
+- `GET /livez`
+- `GET /readyz`
+- `GET /leaderz`
+- `GET /healthz` (compatibility alias for `/readyz`)
+
+These routes are not part of the public OIDC surface.

@@ -34,12 +34,21 @@ This page describes the bridge runtime environment variables loaded by
 | `LOG_LEVEL` | `info` |
 | `SOURCE_IP_ALLOWLIST_ENABLED` | `false` |
 | `SOURCE_IP_ALLOWLIST_CIDRS` | unset |
+| `LEADER_ELECTION_ENABLED` | `false` |
+| `LEADER_ELECTION_LEASE_NAME` | unset |
+| `LEADER_ELECTION_NAMESPACE` | `POD_NAMESPACE` |
+| `LEADER_ELECTION_IDENTITY` | `POD_NAME` |
+| `LEADER_ELECTION_LEASE_DURATION` | `15s` |
+| `LEADER_ELECTION_RENEW_DEADLINE` | `10s` |
+| `LEADER_ELECTION_RETRY_PERIOD` | `2s` |
 
 ## Validation notes
 
 - `ISSUER_URL` must be host-only and must not include a path, query, fragment,
   or explicit port.
 - `SOURCE_IP_ALLOWLIST_CIDRS` is required when source allowlisting is enabled.
+- when leader election is enabled, lease name, namespace, and identity must be present.
+- `LEADER_ELECTION_LEASE_DURATION` must be greater than `LEADER_ELECTION_RENEW_DEADLINE`, which must be greater than `LEADER_ELECTION_RETRY_PERIOD`.
 - cache and timeout durations must be positive.
 - `JWKS_CACHE_TTL` must be at least `5s`.
 

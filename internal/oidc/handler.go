@@ -22,6 +22,9 @@ type Handler struct {
 	DiscoveryMaxAge time.Duration
 	JWKS            JWKSProvider
 	PublicReady     func() bool
+	Live            func() bool
+	Ready           func() bool
+	LeaderReady     func() bool
 	Logger          *slog.Logger
 	MetricsHandler  http.Handler
 }
@@ -45,13 +48,17 @@ func NewHandler(
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{
+	h := &Handler{
 		Discovery:       body,
 		DiscoveryMaxAge: discoveryMaxAge,
 		JWKS:            jwks,
 		PublicReady:     publicReady,
 		Logger:          logger,
-	}, nil
+	}
+	h.Live = func() bool { return true }
+	h.Ready = func() bool { return h.JWKS.Ready() && h.PublicReady() }
+	h.LeaderReady = h.Ready
+	return h, nil
 }
 
 // ServeMux returns a stdlib mux with exactly the two public OIDC routes
@@ -67,6 +74,9 @@ func (h *Handler) ServeMux() *http.ServeMux {
 // be bound on a separate, non-Funnel listener for Kubernetes probes.
 func (h *Handler) HealthMux() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /livez", h.handleLive)
+	mux.HandleFunc("GET /readyz", h.handleReady)
+	mux.HandleFunc("GET /leaderz", h.handleLeader)
 	mux.HandleFunc("GET /healthz", h.handleHealth)
 	if h.MetricsHandler != nil {
 		mux.Handle("GET /metrics", h.MetricsHandler)
@@ -95,14 +105,42 @@ func (h *Handler) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-func (h *Handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) handleLive(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
-	if !h.PublicReady() || !h.JWKS.Ready() {
+	if h.Live != nil && !h.Live() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("not ready\n"))
 		return
 	}
 	_, _ = w.Write([]byte("ok\n"))
+}
+
+func (h *Handler) handleReady(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	if h.Ready != nil && !h.Ready() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("not ready\n"))
+		return
+	}
+	_, _ = w.Write([]byte("ok\n"))
+}
+
+func (h *Handler) handleLeader(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	if h.LeaderReady != nil && !h.LeaderReady() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("not ready\n"))
+		return
+	}
+	_, _ = w.Write([]byte("ok\n"))
+}
+
+func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
+	h.handleReady(w, r)
 }

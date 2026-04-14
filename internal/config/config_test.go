@@ -55,6 +55,18 @@ func TestLoad_HappyPath_Defaults(t *testing.T) {
 	if cfg.SourceIPAllowlistEnabled {
 		t.Errorf("SourceIPAllowlistEnabled default = true")
 	}
+	if cfg.LeaderElectionEnabled {
+		t.Errorf("LeaderElectionEnabled default = true")
+	}
+	if cfg.LeaderElectionLeaseDuration != 15*time.Second {
+		t.Errorf("LeaderElectionLeaseDuration default = %s", cfg.LeaderElectionLeaseDuration)
+	}
+	if cfg.LeaderElectionRenewDeadline != 10*time.Second {
+		t.Errorf("LeaderElectionRenewDeadline default = %s", cfg.LeaderElectionRenewDeadline)
+	}
+	if cfg.LeaderElectionRetryPeriod != 2*time.Second {
+		t.Errorf("LeaderElectionRetryPeriod default = %s", cfg.LeaderElectionRetryPeriod)
+	}
 }
 
 func TestLoad_AllExplicit(t *testing.T) {
@@ -72,6 +84,13 @@ func TestLoad_AllExplicit(t *testing.T) {
 	t.Setenv("LOG_FORMAT", "text")
 	t.Setenv("SOURCE_IP_ALLOWLIST_ENABLED", "true")
 	t.Setenv("SOURCE_IP_ALLOWLIST_CIDRS", "10.0.0.0/8, 192.168.0.0/16")
+	t.Setenv("LEADER_ELECTION_ENABLED", "true")
+	t.Setenv("LEADER_ELECTION_LEASE_NAME", "oidc-lease")
+	t.Setenv("LEADER_ELECTION_NAMESPACE", "oidc-system")
+	t.Setenv("LEADER_ELECTION_IDENTITY", "oidc-pod-0")
+	t.Setenv("LEADER_ELECTION_LEASE_DURATION", "21s")
+	t.Setenv("LEADER_ELECTION_RENEW_DEADLINE", "14s")
+	t.Setenv("LEADER_ELECTION_RETRY_PERIOD", "4s")
 
 	cfg, err := Load()
 	if err != nil {
@@ -104,6 +123,27 @@ func TestLoad_AllExplicit(t *testing.T) {
 	}
 	if cfg.HealthAddr != ":18080" {
 		t.Errorf("HealthAddr = %q", cfg.HealthAddr)
+	}
+	if !cfg.LeaderElectionEnabled {
+		t.Errorf("LeaderElectionEnabled = false")
+	}
+	if cfg.LeaderElectionLeaseName != "oidc-lease" {
+		t.Errorf("LeaderElectionLeaseName = %q", cfg.LeaderElectionLeaseName)
+	}
+	if cfg.LeaderElectionNamespace != "oidc-system" {
+		t.Errorf("LeaderElectionNamespace = %q", cfg.LeaderElectionNamespace)
+	}
+	if cfg.LeaderElectionIdentity != "oidc-pod-0" {
+		t.Errorf("LeaderElectionIdentity = %q", cfg.LeaderElectionIdentity)
+	}
+	if cfg.LeaderElectionLeaseDuration != 21*time.Second {
+		t.Errorf("LeaderElectionLeaseDuration = %s", cfg.LeaderElectionLeaseDuration)
+	}
+	if cfg.LeaderElectionRenewDeadline != 14*time.Second {
+		t.Errorf("LeaderElectionRenewDeadline = %s", cfg.LeaderElectionRenewDeadline)
+	}
+	if cfg.LeaderElectionRetryPeriod != 4*time.Second {
+		t.Errorf("LeaderElectionRetryPeriod = %s", cfg.LeaderElectionRetryPeriod)
 	}
 }
 
@@ -248,6 +288,12 @@ func TestLoad_RejectsNonPositiveDurations(t *testing.T) {
 		{"SHUTDOWN_TIMEOUT", "0s"},
 		{"TS_STATUS_POLL_INTERVAL", "-1s"},
 		{"TS_STATUS_POLL_INTERVAL", "0s"},
+		{"LEADER_ELECTION_LEASE_DURATION", "-1s"},
+		{"LEADER_ELECTION_LEASE_DURATION", "0s"},
+		{"LEADER_ELECTION_RENEW_DEADLINE", "-1s"},
+		{"LEADER_ELECTION_RENEW_DEADLINE", "0s"},
+		{"LEADER_ELECTION_RETRY_PERIOD", "-1s"},
+		{"LEADER_ELECTION_RETRY_PERIOD", "0s"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.envVar+"_"+tc.value, func(t *testing.T) {
@@ -259,6 +305,87 @@ func TestLoad_RejectsNonPositiveDurations(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.envVar) {
 				t.Errorf("error %q does not mention %s", err.Error(), tc.envVar)
+			}
+		})
+	}
+}
+
+func TestLoad_LeaderElectionEnabledRequiresLeaseSettings(t *testing.T) {
+	setProdEnv(t)
+	t.Setenv("LEADER_ELECTION_ENABLED", "true")
+	t.Setenv("LEADER_ELECTION_LEASE_NAME", "")
+	t.Setenv("LEADER_ELECTION_NAMESPACE", "")
+	t.Setenv("LEADER_ELECTION_IDENTITY", "")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for missing leader election fields")
+	}
+	if !strings.Contains(err.Error(), "LEADER_ELECTION_LEASE_NAME") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_LeaderElectionDerivesNamespaceAndIdentityFromPodEnv(t *testing.T) {
+	setProdEnv(t)
+	t.Setenv("LEADER_ELECTION_ENABLED", "true")
+	t.Setenv("LEADER_ELECTION_LEASE_NAME", "oidc-lease")
+	t.Setenv("POD_NAMESPACE", "oidc-system")
+	t.Setenv("POD_NAME", "oidc-pod-0")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LeaderElectionNamespace != "oidc-system" {
+		t.Fatalf("LeaderElectionNamespace = %q", cfg.LeaderElectionNamespace)
+	}
+	if cfg.LeaderElectionIdentity != "oidc-pod-0" {
+		t.Fatalf("LeaderElectionIdentity = %q", cfg.LeaderElectionIdentity)
+	}
+}
+
+func TestLoad_LeaderElectionRejectsInvalidDurationRelationships(t *testing.T) {
+	tests := []struct {
+		name          string
+		leaseDuration string
+		renewDeadline string
+		retryPeriod   string
+		want          string
+	}{
+		{
+			name:          "lease not greater than renew",
+			leaseDuration: "10s",
+			renewDeadline: "10s",
+			retryPeriod:   "2s",
+			want:          "LEADER_ELECTION_LEASE_DURATION",
+		},
+		{
+			name:          "renew not greater than retry",
+			leaseDuration: "15s",
+			renewDeadline: "2s",
+			retryPeriod:   "2s",
+			want:          "LEADER_ELECTION_RENEW_DEADLINE",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setProdEnv(t)
+			t.Setenv("LEADER_ELECTION_ENABLED", "true")
+			t.Setenv("LEADER_ELECTION_LEASE_NAME", "oidc-lease")
+			t.Setenv("LEADER_ELECTION_NAMESPACE", "oidc-system")
+			t.Setenv("LEADER_ELECTION_IDENTITY", "oidc-pod-0")
+			t.Setenv("LEADER_ELECTION_LEASE_DURATION", tt.leaseDuration)
+			t.Setenv("LEADER_ELECTION_RENEW_DEADLINE", tt.renewDeadline)
+			t.Setenv("LEADER_ELECTION_RETRY_PERIOD", tt.retryPeriod)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tt.want)
 			}
 		})
 	}

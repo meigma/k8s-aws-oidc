@@ -1,3 +1,6 @@
+{{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElection.enabled) -}}
+{{- fail "replicaCount > 1 requires leaderElection.enabled=true" -}}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,9 +9,16 @@ metadata:
     {{- include "k8s-aws-oidc-chart.labels" . | nindent 4 }}
 spec:
   revisionHistoryLimit: 2
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
   strategy:
+    {{- if .Values.leaderElection.enabled }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    {{- else }}
     type: Recreate
+    {{- end }}
   selector:
     matchLabels:
       {{- include "k8s-aws-oidc-chart.selectorLabels" . | nindent 6 }}
@@ -82,6 +92,16 @@ spec:
               value: {{ .Values.healthAddr | quote }}
             - name: FUNNEL_ADDR
               value: {{ .Values.funnelAddr | quote }}
+            - name: LEADER_ELECTION_ENABLED
+              value: {{ ternary "true" "false" .Values.leaderElection.enabled | quote }}
+            - name: LEADER_ELECTION_LEASE_NAME
+              value: {{ include "k8s-aws-oidc-chart.leaseName" . | quote }}
+            - name: LEADER_ELECTION_LEASE_DURATION
+              value: {{ .Values.leaderElection.leaseDuration | quote }}
+            - name: LEADER_ELECTION_RENEW_DEADLINE
+              value: {{ .Values.leaderElection.renewDeadline | quote }}
+            - name: LEADER_ELECTION_RETRY_PERIOD
+              value: {{ .Values.leaderElection.retryPeriod | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
             - name: LOG_FORMAT
@@ -111,6 +131,11 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
             - name: POD_UID
               valueFrom:
                 fieldRef:
@@ -122,15 +147,23 @@ spec:
               value: /tmp
           startupProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: health
               scheme: HTTP
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: health
+              scheme: HTTP
+            periodSeconds: 30
+            timeoutSeconds: 2
+            failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: health
               scheme: HTTP
             periodSeconds: 10

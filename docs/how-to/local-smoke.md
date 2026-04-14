@@ -103,6 +103,28 @@ just down
 
 It leaves `tmp/smoke/` in place for debugging.
 
+## Exercise Failover
+
+Run:
+
+```bash
+just failover
+```
+
+`just failover` requires an existing smoke environment from `just up`. It will:
+
+1. rebuild and redeploy the bridge from the current checkout
+2. upgrade the bridge to active/passive HA with two replicas
+3. verify the public endpoints and both STS proofs in HA mode
+4. delete the current leader pod
+5. wait for a different Lease holder and for the bridge deployment to recover
+6. re-run the public endpoint and STS proofs after failover
+7. capture before/after Lease state, per-pod logs, per-pod `/leaderz` and
+   `/metrics`, and namespace events under `tmp/smoke/captures/`
+
+This command verifies recovery after failover. It does not attempt to measure
+or enforce zero downtime during leader replacement.
+
 ## Notes
 
 - The harness never stores raw AWS credentials in `tmp/smoke/`.

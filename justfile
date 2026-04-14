@@ -5,3 +5,6 @@ up:
 
 down:
     bash hack/smoke/down.sh
+
+failover:
+    bash hack/smoke/failover.sh

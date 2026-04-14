@@ -1,0 +1,13 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "k8s-aws-oidc-chart.fullname" . }}
+  labels:
+    {{- include "k8s-aws-oidc-chart.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "k8s-aws-oidc-chart.selectorLabels" . | nindent 6 }}
+{{- end }}

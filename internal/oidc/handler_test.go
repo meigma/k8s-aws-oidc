@@ -26,13 +26,13 @@ type stubProvider struct {
 func (s *stubProvider) Current() ([]byte, string) { return s.body, s.cc }
 func (s *stubProvider) Ready() bool               { return s.ready }
 
-func newTestHandler(t *testing.T, p JWKSProvider, publicReady func() bool) *Handler {
+func newTestHandler(t *testing.T, p JWKSProvider) *Handler {
 	t.Helper()
 	h, err := NewHandler(
 		"https://oidc.example.ts.net",
 		3600*time.Second,
 		p,
-		publicReady,
+		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
 	if err != nil {
@@ -43,7 +43,7 @@ func newTestHandler(t *testing.T, p JWKSProvider, publicReady func() bool) *Hand
 
 func TestHandler_Discovery(t *testing.T) {
 	p := &stubProvider{body: []byte(`{"keys":[]}`), cc: "public, max-age=60", ready: true}
-	h := newTestHandler(t, p, nil)
+	h := newTestHandler(t, p)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -78,7 +78,7 @@ func TestHandler_JWKS_Ready(t *testing.T) {
 		cc:    "public, max-age=60",
 		ready: true,
 	}
-	h := newTestHandler(t, p, nil)
+	h := newTestHandler(t, p)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -105,7 +105,7 @@ func TestHandler_JWKS_Ready(t *testing.T) {
 
 func TestHandler_JWKS_NotReady(t *testing.T) {
 	p := &stubProvider{ready: false}
-	h := newTestHandler(t, p, nil)
+	h := newTestHandler(t, p)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -122,12 +122,37 @@ func TestHandler_JWKS_NotReady(t *testing.T) {
 
 func TestHandler_Health(t *testing.T) {
 	p := &stubProvider{ready: false}
-	publicReady := false
-	h := newTestHandler(t, p, func() bool { return publicReady })
+	livez := true
+	readyz := false
+	leaderz := false
+	h := newTestHandler(t, p)
+	h.Live = func() bool { return livez }
+	h.Ready = func() bool { return readyz }
+	h.LeaderReady = func() bool { return leaderz }
 	srv := httptest.NewServer(h.HealthMux())
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/healthz")
+	resp, err := http.Get(srv.URL + "/livez")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("live status = %d", resp.StatusCode)
+	}
+
+	livez = false
+	resp, err = http.Get(srv.URL + "/livez")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("not-live status = %d", resp.StatusCode)
+	}
+
+	livez = true
+	resp, err = http.Get(srv.URL + "/readyz")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -136,29 +161,38 @@ func TestHandler_Health(t *testing.T) {
 		t.Errorf("not-ready status = %d", resp.StatusCode)
 	}
 
-	p.ready = true
-	resp, err = http.Get(srv.URL + "/healthz")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("jwks-ready/public-not-ready status = %d", resp.StatusCode)
-	}
-
-	publicReady = true
+	readyz = true
 	resp, err = http.Get(srv.URL + "/healthz")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("ready status = %d", resp.StatusCode)
+		t.Errorf("healthz status = %d", resp.StatusCode)
+	}
+
+	resp, err = http.Get(srv.URL + "/leaderz")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("not-leader status = %d", resp.StatusCode)
+	}
+
+	leaderz = true
+	resp, err = http.Get(srv.URL + "/leaderz")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("leader status = %d", resp.StatusCode)
 	}
 }
 
 func TestHandler_MetricsExposedOnlyOnHealthMux(t *testing.T) {
-	h := newTestHandler(t, &stubProvider{ready: true}, nil)
+	h := newTestHandler(t, &stubProvider{ready: true})
 	recorder := metrics.New(time.Minute)
 	h.MetricsHandler = recorder.Handler()
 
@@ -191,7 +225,7 @@ func TestHandler_MetricsExposedOnlyOnHealthMux(t *testing.T) {
 }
 
 func TestHandler_PostReturns405(t *testing.T) {
-	h := newTestHandler(t, &stubProvider{ready: true}, nil)
+	h := newTestHandler(t, &stubProvider{ready: true})
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -206,7 +240,7 @@ func TestHandler_PostReturns405(t *testing.T) {
 }
 
 func TestHandler_UnknownPathReturns404(t *testing.T) {
-	h := newTestHandler(t, &stubProvider{ready: true}, nil)
+	h := newTestHandler(t, &stubProvider{ready: true})
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -221,7 +255,7 @@ func TestHandler_UnknownPathReturns404(t *testing.T) {
 }
 
 func TestHandler_PublicMuxDoesNotExposeHealth(t *testing.T) {
-	h := newTestHandler(t, &stubProvider{ready: true}, nil)
+	h := newTestHandler(t, &stubProvider{ready: true})
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -237,7 +271,7 @@ func TestHandler_PublicMuxDoesNotExposeHealth(t *testing.T) {
 
 func TestHandler_HEAD(t *testing.T) {
 	p := &stubProvider{body: []byte(`{"keys":[]}`), cc: "public, max-age=60", ready: true}
-	h := newTestHandler(t, p, nil)
+	h := newTestHandler(t, p)
 	publicSrv := httptest.NewServer(h.ServeMux())
 	defer publicSrv.Close()
 	healthSrv := httptest.NewServer(h.HealthMux())
@@ -250,6 +284,9 @@ func TestHandler_HEAD(t *testing.T) {
 		{base: publicSrv.URL, path: "/.well-known/openid-configuration"},
 		{base: publicSrv.URL, path: "/openid/v1/jwks"},
 		{base: healthSrv.URL, path: "/healthz"},
+		{base: healthSrv.URL, path: "/livez"},
+		{base: healthSrv.URL, path: "/readyz"},
+		{base: healthSrv.URL, path: "/leaderz"},
 	} {
 		req, _ := http.NewRequest(http.MethodHead, target.base+target.path, nil)
 		resp, err := http.DefaultClient.Do(req)
@@ -294,6 +331,9 @@ func TestHandler_LogSecretLeakCanary(t *testing.T) {
 		{base: publicSrv.URL, path: "/.well-known/openid-configuration"},
 		{base: publicSrv.URL, path: "/openid/v1/jwks"},
 		{base: healthSrv.URL, path: "/healthz"},
+		{base: healthSrv.URL, path: "/livez"},
+		{base: healthSrv.URL, path: "/readyz"},
+		{base: healthSrv.URL, path: "/leaderz"},
 	} {
 		resp, gerr := http.Get(target.base + target.path)
 		if gerr != nil {
