@@ -3,4 +3,4 @@
 .env
 dist/
 tmp/
-oidc-proxy
+/oidc-proxy

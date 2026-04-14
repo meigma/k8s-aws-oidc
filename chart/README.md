@@ -9,16 +9,17 @@ The chart OCI artifact is published as `oci://ghcr.io/meigma/k8s-aws-oidc-chart`
 ## What this chart creates
 
 - `Deployment`
-- Optional internal `Service` for `/healthz` and `/metrics`
+- Optional internal `Service` for the health endpoints and `/metrics`
 - `ServiceAccount`
 - `Role`
 - `RoleBinding`
+- Optional `Lease` for leader election
+- Optional `PodDisruptionBudget`
 - Optional `ServiceMonitor` for Prometheus Operator
 - Optional Kyverno `Policy` for image signature and provenance verification
 - Optional empty state `Secret` for `tailscale.com/ipn/store/kubestore`
 
-This chart does not create an `Ingress`, `HPA`, `PodDisruptionBudget`, or
-`NetworkPolicy`.
+This chart does not create an `Ingress`, `HPA`, or `NetworkPolicy`.
 
 ## Prerequisites
 
@@ -71,11 +72,14 @@ metadata. Set `image.tag` to override that default with a different tag, or set
 - `tailscale.oauthSecret.name`: existing Secret with the OAuth credentials
 - `tailscale.stateSecret.name`: optional override for the kubestore state Secret
 - `tailscale.stateSecret.create`: pre-create the empty state Secret
+- `replicaCount`: number of bridge pods to run
+- `leaderElection.*`: Kubernetes Lease-based active/passive HA settings
 - `serviceAccount.create`: create a dedicated ServiceAccount
 - `serviceAccount.name`: required when `serviceAccount.create=false`
 - `rbac.create`: create the Role and RoleBinding
 - `kyverno.*`: optional namespaced Kyverno policy that verifies image signatures and SLSA provenance
 - `metrics.*`: internal metrics service and optional ServiceMonitor configuration
+- `podDisruptionBudget.*`: optional PDB for HA installs
 - `sourceIpAllowlist.enabled`: enable source CIDR gating for public requests
 - `sourceIpAllowlist.cidrs`: CIDR list used when the allowlist is enabled
 
@@ -116,10 +120,13 @@ off the root filesystem.
 
 ## Operations
 
-- The workload is intentionally single-replica. The chart hard-codes one
-  replica and uses a `Recreate` strategy.
-- The readiness and startup probes hit `GET /healthz` on the internal listener
-  at `:8080`.
+- By default the workload stays single-replica and uses a `Recreate` strategy.
+- Set `leaderElection.enabled=true` and `replicaCount>1` to run active/passive
+  HA with a Kubernetes `Lease`.
+- In HA mode the chart switches to a `RollingUpdate` strategy and only one pod
+  owns Funnel at a time.
+- Startup and liveness probes hit `GET /livez`; readiness uses `GET /readyz` on
+  the internal listener at `:8080`.
 - `/metrics` is served on the same internal listener and can be exposed through
   the optional internal ClusterIP Service.
 - Rotating the external OAuth Secret does not restart the pod automatically.

@@ -122,12 +122,37 @@ func TestHandler_JWKS_NotReady(t *testing.T) {
 
 func TestHandler_Health(t *testing.T) {
 	p := &stubProvider{ready: false}
-	publicReady := false
-	h := newTestHandler(t, p, func() bool { return publicReady })
+	livez := true
+	readyz := false
+	leaderz := false
+	h := newTestHandler(t, p, nil)
+	h.Live = func() bool { return livez }
+	h.Ready = func() bool { return readyz }
+	h.LeaderReady = func() bool { return leaderz }
 	srv := httptest.NewServer(h.HealthMux())
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/healthz")
+	resp, err := http.Get(srv.URL + "/livez")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("live status = %d", resp.StatusCode)
+	}
+
+	livez = false
+	resp, err = http.Get(srv.URL + "/livez")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("not-live status = %d", resp.StatusCode)
+	}
+
+	livez = true
+	resp, err = http.Get(srv.URL + "/readyz")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -136,24 +161,33 @@ func TestHandler_Health(t *testing.T) {
 		t.Errorf("not-ready status = %d", resp.StatusCode)
 	}
 
-	p.ready = true
-	resp, err = http.Get(srv.URL + "/healthz")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("jwks-ready/public-not-ready status = %d", resp.StatusCode)
-	}
-
-	publicReady = true
+	readyz = true
 	resp, err = http.Get(srv.URL + "/healthz")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("ready status = %d", resp.StatusCode)
+		t.Errorf("healthz status = %d", resp.StatusCode)
+	}
+
+	resp, err = http.Get(srv.URL + "/leaderz")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("not-leader status = %d", resp.StatusCode)
+	}
+
+	leaderz = true
+	resp, err = http.Get(srv.URL + "/leaderz")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("leader status = %d", resp.StatusCode)
 	}
 }
 
@@ -250,6 +284,9 @@ func TestHandler_HEAD(t *testing.T) {
 		{base: publicSrv.URL, path: "/.well-known/openid-configuration"},
 		{base: publicSrv.URL, path: "/openid/v1/jwks"},
 		{base: healthSrv.URL, path: "/healthz"},
+		{base: healthSrv.URL, path: "/livez"},
+		{base: healthSrv.URL, path: "/readyz"},
+		{base: healthSrv.URL, path: "/leaderz"},
 	} {
 		req, _ := http.NewRequest(http.MethodHead, target.base+target.path, nil)
 		resp, err := http.DefaultClient.Do(req)
@@ -294,6 +331,9 @@ func TestHandler_LogSecretLeakCanary(t *testing.T) {
 		{base: publicSrv.URL, path: "/.well-known/openid-configuration"},
 		{base: publicSrv.URL, path: "/openid/v1/jwks"},
 		{base: healthSrv.URL, path: "/healthz"},
+		{base: healthSrv.URL, path: "/livez"},
+		{base: healthSrv.URL, path: "/readyz"},
+		{base: healthSrv.URL, path: "/leaderz"},
 	} {
 		resp, gerr := http.Get(target.base + target.path)
 		if gerr != nil {

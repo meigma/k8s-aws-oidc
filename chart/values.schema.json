@@ -13,6 +13,10 @@
     "fullnameOverride": {
       "type": "string"
     },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
     "issuerUrl": {
       "type": "string",
       "minLength": 1,
@@ -77,6 +81,30 @@
     "healthAddr": {
       "type": "string",
       "minLength": 1
+    },
+    "leaderElection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "leaseName": {
+          "type": "string"
+        },
+        "leaseDuration": {
+          "type": "string",
+          "minLength": 1
+        },
+        "renewDeadline": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retryPeriod": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     },
     "metrics": {
       "type": "object",
@@ -301,6 +329,19 @@
       "type": "array",
       "items": {
         "type": "object"
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minAvailable": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "kyverno": {

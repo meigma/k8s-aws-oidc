@@ -19,6 +19,9 @@ The bridge exposes Prometheus-format metrics on the internal listener at
 - `oidc_proxy_tsnet_start_total{result,error_kind}`
 - `oidc_proxy_tsnet_state_transitions_total{state}`
 - `oidc_proxy_public_listener_restarts_total{reason}`
+- `oidc_proxy_leader_election_transitions_total{state}`
+- `oidc_proxy_leader`
+- `oidc_proxy_public_ready`
 - `oidc_proxy_issuer_host_verification_total{result}`
 - `oidc_proxy_auth_key_mint_total{result,error_kind}`
 - `oidc_proxy_process_start_time_seconds`

@@ -27,6 +27,7 @@ The full project documentation is published at
   private Kubernetes issuer
 - Uses Tailscale Funnel to publish the issuer URL without exposing the API
   server
+- Supports active/passive HA with Kubernetes leader election
 - Ships a Helm chart for cluster deployment
 - Ships Terraform modules for the AWS IAM OIDC provider and trusted roles
 - Includes Diataxis documentation for deployment, operations, and troubleshooting
@@ -145,7 +146,6 @@ Repository-local docs live under [`docs/`](docs/).
 - [`docs/`](docs/) - Docusaurus source for the published documentation site
 - [`internal/`](internal/) - Go packages for config, OIDC metadata handling,
   network helpers, and Tailscale runtime integration
-- [`DESIGN.md`](DESIGN.md) - architecture notes and design decisions
 
 ## Development
 

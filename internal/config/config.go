@@ -26,6 +26,14 @@ type Config struct {
 	TSTag             string
 	HealthAddr        string
 
+	LeaderElectionEnabled       bool
+	LeaderElectionLeaseName     string
+	LeaderElectionNamespace     string
+	LeaderElectionIdentity      string
+	LeaderElectionLeaseDuration time.Duration
+	LeaderElectionRenewDeadline time.Duration
+	LeaderElectionRetryPeriod   time.Duration
+
 	JWKSCacheTTL          time.Duration
 	JWKSCacheMaxAgeHeader time.Duration
 	DiscoveryMaxAgeHeader time.Duration
@@ -50,6 +58,9 @@ const (
 	defaultTSStartTimeout       = 30 * time.Second
 	defaultShutdownTimeout      = 10 * time.Second
 	defaultTSStatusPollInterval = 15 * time.Second
+	defaultLeaderLeaseDuration  = 15 * time.Second
+	defaultLeaderRenewDeadline  = 10 * time.Second
+	defaultLeaderRetryPeriod    = 2 * time.Second
 	minJWKSCacheTTL             = 5 * time.Second
 )
 
@@ -68,14 +79,18 @@ var removedEnvVars = []string{
 // Load reads the configuration from environment variables and validates it.
 func Load() (*Config, error) {
 	cfg := &Config{
-		IssuerURL:         os.Getenv("ISSUER_URL"),
-		TSHostname:        os.Getenv("TS_HOSTNAME"),
-		TSStateSecret:     os.Getenv("TS_STATE_SECRET"),
-		TSAPIClientID:     os.Getenv("TS_API_CLIENT_ID"),
-		TSAPIClientSecret: os.Getenv("TS_API_CLIENT_SECRET"),
-		TSTag:             os.Getenv("TS_TAG"),
-		HealthAddr:        envDefault("HEALTH_ADDR", ":8080"),
-		FunnelAddr:        envDefault("FUNNEL_ADDR", ":443"),
+		IssuerURL:               os.Getenv("ISSUER_URL"),
+		TSHostname:              os.Getenv("TS_HOSTNAME"),
+		TSStateSecret:           os.Getenv("TS_STATE_SECRET"),
+		TSAPIClientID:           os.Getenv("TS_API_CLIENT_ID"),
+		TSAPIClientSecret:       os.Getenv("TS_API_CLIENT_SECRET"),
+		TSTag:                   os.Getenv("TS_TAG"),
+		HealthAddr:              envDefault("HEALTH_ADDR", ":8080"),
+		FunnelAddr:              envDefault("FUNNEL_ADDR", ":443"),
+		LeaderElectionEnabled:   envBool("LEADER_ELECTION_ENABLED"),
+		LeaderElectionLeaseName: os.Getenv("LEADER_ELECTION_LEASE_NAME"),
+		LeaderElectionNamespace: envDefault("LEADER_ELECTION_NAMESPACE", os.Getenv("POD_NAMESPACE")),
+		LeaderElectionIdentity:  envDefault("LEADER_ELECTION_IDENTITY", os.Getenv("POD_NAME")),
 	}
 
 	var err error
@@ -98,6 +113,15 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if cfg.TSStatusPollInterval, err = envDuration("TS_STATUS_POLL_INTERVAL", defaultTSStatusPollInterval); err != nil {
+		return nil, err
+	}
+	if cfg.LeaderElectionLeaseDuration, err = envDuration("LEADER_ELECTION_LEASE_DURATION", defaultLeaderLeaseDuration); err != nil {
+		return nil, err
+	}
+	if cfg.LeaderElectionRenewDeadline, err = envDuration("LEADER_ELECTION_RENEW_DEADLINE", defaultLeaderRenewDeadline); err != nil {
+		return nil, err
+	}
+	if cfg.LeaderElectionRetryPeriod, err = envDuration("LEADER_ELECTION_RETRY_PERIOD", defaultLeaderRetryPeriod); err != nil {
 		return nil, err
 	}
 
@@ -142,6 +166,9 @@ func (c *Config) validate() error {
 	if err := c.validateAllowlist(); err != nil {
 		return err
 	}
+	if err := c.validateLeaderElection(); err != nil {
+		return err
+	}
 	if err := c.validateDurations(); err != nil {
 		return err
 	}
@@ -173,6 +200,9 @@ func (c *Config) validateDurations() error {
 		{"TS_START_TIMEOUT", c.TSStartTimeout},
 		{"SHUTDOWN_TIMEOUT", c.ShutdownTimeout},
 		{"TS_STATUS_POLL_INTERVAL", c.TSStatusPollInterval},
+		{"LEADER_ELECTION_LEASE_DURATION", c.LeaderElectionLeaseDuration},
+		{"LEADER_ELECTION_RENEW_DEADLINE", c.LeaderElectionRenewDeadline},
+		{"LEADER_ELECTION_RETRY_PERIOD", c.LeaderElectionRetryPeriod},
 	}
 	for _, ch := range checks {
 		if ch.val <= 0 {
@@ -181,6 +211,28 @@ func (c *Config) validateDurations() error {
 	}
 	if c.JWKSCacheTTL < minJWKSCacheTTL {
 		return fmt.Errorf("JWKS_CACHE_TTL: must be >= %s, got %s", minJWKSCacheTTL, c.JWKSCacheTTL)
+	}
+	return nil
+}
+
+func (c *Config) validateLeaderElection() error {
+	if !c.LeaderElectionEnabled {
+		return nil
+	}
+	if c.LeaderElectionLeaseName == "" {
+		return errors.New("LEADER_ELECTION_LEASE_NAME is required when LEADER_ELECTION_ENABLED=true")
+	}
+	if c.LeaderElectionNamespace == "" {
+		return errors.New("LEADER_ELECTION_NAMESPACE is required when LEADER_ELECTION_ENABLED=true")
+	}
+	if c.LeaderElectionIdentity == "" {
+		return errors.New("LEADER_ELECTION_IDENTITY is required when LEADER_ELECTION_ENABLED=true")
+	}
+	if c.LeaderElectionLeaseDuration <= c.LeaderElectionRenewDeadline {
+		return fmt.Errorf("LEADER_ELECTION_LEASE_DURATION must be greater than LEADER_ELECTION_RENEW_DEADLINE (%s <= %s)", c.LeaderElectionLeaseDuration, c.LeaderElectionRenewDeadline)
+	}
+	if c.LeaderElectionRenewDeadline <= c.LeaderElectionRetryPeriod {
+		return fmt.Errorf("LEADER_ELECTION_RENEW_DEADLINE must be greater than LEADER_ELECTION_RETRY_PERIOD (%s <= %s)", c.LeaderElectionRenewDeadline, c.LeaderElectionRetryPeriod)
 	}
 	return nil
 }

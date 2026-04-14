@@ -33,6 +33,8 @@ type Metrics struct {
 	jwksUpdatedAt   atomic.Int64
 	jwksKidCount    atomic.Int64
 	jwksHasValue    atomic.Bool
+	leader          atomic.Bool
+	publicReady     atomic.Bool
 
 	httpRequestsTotal       *prometheus.CounterVec
 	httpRequestDuration     *prometheus.HistogramVec
@@ -44,6 +46,7 @@ type Metrics struct {
 	publicListenerRestarts  *prometheus.CounterVec
 	issuerHostVerification  *prometheus.CounterVec
 	authKeyMintTotal        *prometheus.CounterVec
+	leaderTransitionsTotal  *prometheus.CounterVec
 	processStartTimeSeconds prometheus.Gauge
 	healthServerStartTotal  prometheus.Counter
 }
@@ -144,6 +147,14 @@ func (m *Metrics) initCollectors() {
 		},
 		[]string{"result", "error_kind"},
 	)
+	m.leaderTransitionsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "leader_election_transitions_total",
+			Help:      "Total number of leadership state transitions observed by this pod.",
+		},
+		[]string{"state"},
+	)
 	m.processStartTimeSeconds = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: namespace,
@@ -186,6 +197,7 @@ func (m *Metrics) registerCollectors() {
 		m.publicListenerRestarts,
 		m.issuerHostVerification,
 		m.authKeyMintTotal,
+		m.leaderTransitionsTotal,
 		m.processStartTimeSeconds,
 		m.healthServerStartTotal,
 		prometheus.NewGaugeFunc(
@@ -211,6 +223,22 @@ func (m *Metrics) registerCollectors() {
 				Help:      "Number of JWK keys in the currently served JWKS payload.",
 			},
 			m.jwksKidCountValue,
+		),
+		prometheus.NewGaugeFunc(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "leader",
+				Help:      "Whether this pod is the current leader for the public Funnel endpoint.",
+			},
+			m.leaderValue,
+		),
+		prometheus.NewGaugeFunc(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "public_ready",
+				Help:      "Whether this pod is actively serving the public Funnel listener.",
+			},
+			m.publicReadyValue,
 		),
 	)
 }
@@ -325,12 +353,36 @@ func (m *Metrics) RecordAuthKeyMint(result, errorKind string) {
 	m.authKeyMintTotal.WithLabelValues(result, normalizeErrorKind(errorKind)).Inc()
 }
 
+// RecordLeaderElectionTransition records one leadership transition for this pod.
+func (m *Metrics) RecordLeaderElectionTransition(state string) {
+	if m == nil || strings.TrimSpace(state) == "" {
+		return
+	}
+	m.leaderTransitionsTotal.WithLabelValues(state).Inc()
+}
+
 // RecordHealthServerStart records one internal health/metrics server start.
 func (m *Metrics) RecordHealthServerStart() {
 	if m == nil {
 		return
 	}
 	m.healthServerStartTotal.Inc()
+}
+
+// SetLeader updates the leader gauge source state.
+func (m *Metrics) SetLeader(v bool) {
+	if m == nil {
+		return
+	}
+	m.leader.Store(v)
+}
+
+// SetPublicReady updates the public-ready gauge source state.
+func (m *Metrics) SetPublicReady(v bool) {
+	if m == nil {
+		return
+	}
+	m.publicReady.Store(v)
 }
 
 func (m *Metrics) updateJWKSState(kidCount int) {
@@ -372,6 +424,20 @@ func (m *Metrics) jwksKidCountValue() float64 {
 		return 0
 	}
 	return float64(m.jwksKidCount.Load())
+}
+
+func (m *Metrics) leaderValue() float64 {
+	if m == nil || !m.leader.Load() {
+		return 0
+	}
+	return 1
+}
+
+func (m *Metrics) publicReadyValue() float64 {
+	if m == nil || !m.publicReady.Load() {
+		return 0
+	}
+	return 1
 }
 
 func normalizeErrorKind(errorKind string) string {

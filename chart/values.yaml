@@ -4,6 +4,9 @@ nameOverride: ""
 # fullnameOverride overrides the fully qualified release name used for generated resource names.
 fullnameOverride: ""
 
+# replicaCount is the number of bridge pods to run. Values greater than 1 require leaderElection.enabled=true.
+replicaCount: 1
+
 # issuerUrl is the public OIDC issuer URL served by this workload and configured on the kube-apiserver.
 issuerUrl: ""
 
@@ -31,6 +34,14 @@ funnelAddr: ":443"
 
 # healthAddr is the internal health listener address passed to the application.
 healthAddr: ":8080"
+
+# leaderElection configures active/passive HA using a Kubernetes Lease.
+leaderElection:
+  enabled: false
+  leaseName: ""
+  leaseDuration: 15s
+  renewDeadline: 10s
+  retryPeriod: 2s
 
 # metrics configures the internal metrics endpoint and scrape resources.
 # metrics.enabled controls whether the chart renders metrics-oriented Kubernetes resources.
@@ -112,6 +123,11 @@ affinity: {}
 
 # topologySpreadConstraints configures pod topology spread constraints.
 topologySpreadConstraints: []
+
+# podDisruptionBudget renders an optional PDB for HA installs.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
 
 # kyverno.enabled renders an optional Kyverno Policy that verifies this chart's image signature and provenance.
 # kyverno.validationFailureAction controls whether Kyverno audits or enforces admission failures.

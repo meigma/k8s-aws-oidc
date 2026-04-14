@@ -24,7 +24,7 @@ The chart assumes:
 - the OAuth secret already exists
 - the Tailscale tag is already allowed by the tailnet policy and has the
   `funnel` node attribute
-- one replica with a `Recreate` strategy is acceptable
+- single-replica installs use a `Recreate` strategy by default
 
 ## Minimal install
 
@@ -60,6 +60,18 @@ unless you set `image.digest` yourself.
 
 Do this if you want the bridge identity to survive redeployments cleanly and be
 easy to inspect.
+
+### Turn on active/passive HA
+
+```bash
+--set replicaCount=2 \
+--set leaderElection.enabled=true \
+--set podDisruptionBudget.enabled=true
+```
+
+This keeps one active Funnel owner and one warm standby. Readiness reports
+healthy standbys as ready, while `GET /leaderz` identifies the current
+public-serving pod.
 
 ### Turn on request allowlisting
 

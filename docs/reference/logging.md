@@ -11,7 +11,7 @@ ingestion; `LOG_FORMAT=text` is available for local debugging.
 
 | Field | Meaning |
 |---|---|
-| `component` | Stable subsystem name such as `process`, `public_http`, `jwks_cache`, `tsnet_runner`, or `tailscale_auth`. |
+| `component` | Stable subsystem name such as `process`, `public_http`, `jwks_cache`, `tsnet_runner`, `leader_election`, or `tailscale_auth`. |
 | `event` | Stable event name for alerting and parsing. |
 | `msg` | Human-readable text only; do not parse it. |
 
@@ -33,6 +33,11 @@ ingestion; `LOG_FORMAT=text` is available for local debugging.
 | `issuer_host_verified` | `tsnet_runner` | `expected_host`, `cert_domains`, `cert_domain_count` |
 | `issuer_host_mismatch` | `tsnet_runner` | `expected_host`, `cert_domains`, `cert_domain_count` |
 | `public_listener_restart` | `tsnet_runner` | `reason` |
+| `leader_election_initialized` | `leader_election` | `lease_name`, `namespace`, `identity`, `lease_duration`, `renew_deadline`, `retry_period` |
+| `leadership_acquired` | `leader_election` | `identity`, `lease_name` |
+| `leadership_lost` | `leader_election` | `identity`, `lease_name` |
+| `leader_observed` | `leader_election` | `identity`, `leader_identity` |
+| `leader_runner_exit` | `leader_election` | `error_kind`, `error` |
 | `auth_key_mint_success` | `tailscale_auth` | `tags`, `tag_count` |
 | `auth_key_mint_failure` | `tailscale_auth` | `error_kind`, `error` |
 

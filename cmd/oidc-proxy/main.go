@@ -13,10 +13,10 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"sync/atomic"
 	"syscall"
 
 	"github.com/meigma/k8s-aws-oidc/internal/config"
+	"github.com/meigma/k8s-aws-oidc/internal/leader"
 	"github.com/meigma/k8s-aws-oidc/internal/logx"
 	"github.com/meigma/k8s-aws-oidc/internal/metrics"
 	"github.com/meigma/k8s-aws-oidc/internal/netx"
@@ -69,6 +69,13 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	state := &runtimeState{}
+	state.SetLeaderElectionEnabled(cfg.LeaderElectionEnabled)
+	go func() {
+		<-ctx.Done()
+		state.SetShuttingDown(true)
+	}()
+
 	issuerURL, err := url.Parse(cfg.IssuerURL)
 	if err != nil {
 		return finish(fmt.Errorf("parse issuer URL: %w", err))
@@ -91,14 +98,24 @@ func run(logger *slog.Logger) error {
 		return finish(err)
 	}
 
-	var publicReady atomic.Bool
-	handler, err := oidc.NewHandler(cfg.IssuerURL, cfg.DiscoveryMaxAgeHeader, cache, publicReady.Load, logger)
+	if !cfg.LeaderElectionEnabled {
+		state.SetLeader(true)
+		metricsRecorder.SetLeader(true)
+	}
+
+	handler, err := oidc.NewHandler(cfg.IssuerURL, cfg.DiscoveryMaxAgeHeader, cache, state.PublicReady, logger)
 	if err != nil {
 		return finish(fmt.Errorf("handler: %w", err))
 	}
 	handler.MetricsHandler = metricsRecorder.Handler()
+	handler.Live = state.Live
+	handler.Ready = func() bool { return state.Ready(cache.Ready()) }
+	handler.LeaderReady = func() bool { return state.LeaderReady(cache.Ready()) }
 
-	runnerCfg, err := buildRunnerConfig(cfg, handler, publicReady.Store, logger, metricsRecorder)
+	runnerCfg, err := buildRunnerConfig(cfg, handler, func(v bool) {
+		state.SetPublicReady(v)
+		metricsRecorder.SetPublicReady(v)
+	}, logger, metricsRecorder)
 	if err != nil {
 		return finish(err)
 	}
@@ -116,7 +133,17 @@ func run(logger *slog.Logger) error {
 		Metrics:      metricsRecorder,
 	}
 
-	return finish(serveAll(ctx, stop, cfg, handler, runnerCfg, factory, minter, logger, metricsRecorder))
+	publicRunner := func(runCtx context.Context) error {
+		return tsrunner.Run(runCtx, runnerCfg, factory, minter)
+	}
+	processRunner := publicRunner
+	if cfg.LeaderElectionEnabled {
+		processRunner = func(runCtx context.Context) error {
+			return runWithLeaderElection(runCtx, cfg, state, logger, metricsRecorder, leader.Run, publicRunner)
+		}
+	}
+
+	return finish(runProcessWithHealthServer(ctx, stop, cfg, handler, runnerCfg.HTTPTimeouts, logger, metricsRecorder, processRunner))
 }
 
 // startCache builds the HTTP fetcher, primes the JWKS cache synchronously so
@@ -183,27 +210,27 @@ func buildRunnerConfig(
 	}, nil
 }
 
-// serveAll runs the health server and the tsnet runner concurrently, waits
-// for the first to exit, and then drives a graceful shutdown of the other.
-func serveAll(
+// runProcessWithHealthServer runs the health server and the provided process
+// concurrently, waits for the first to exit, and then drives a graceful
+// shutdown of the other.
+func runProcessWithHealthServer(
 	ctx context.Context,
 	stop context.CancelFunc,
 	cfg *config.Config,
 	handler *oidc.Handler,
-	runnerCfg tsrunner.Config,
-	factory tsrunner.ServerFactory,
-	minter tsrunner.AuthKeyMinter,
+	timeouts tsrunner.HTTPTimeouts,
 	logger *slog.Logger,
 	recorder *metrics.Metrics,
+	processRunner func(context.Context) error,
 ) error {
-	healthSrv, healthErrCh, err := startHealthServer(ctx, cfg, handler, runnerCfg.HTTPTimeouts, logger, recorder)
+	healthSrv, healthErrCh, err := startHealthServer(ctx, cfg, handler, timeouts, logger, recorder)
 	if err != nil {
 		return err
 	}
 
 	runErrCh := make(chan error, 1)
 	go func() {
-		runErrCh <- tsrunner.Run(ctx, runnerCfg, factory, minter)
+		runErrCh <- processRunner(ctx)
 	}()
 
 	var runErr error
@@ -297,6 +324,8 @@ func processErrorKind(err error) string {
 		return "context_canceled"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "deadline_exceeded"
+	case errors.Is(err, errLeadershipLost):
+		return "leadership_lost"
 	default:
 		return "startup_failed"
 	}
@@ -308,6 +337,8 @@ func processErrorSummary(err error) string {
 		return "context canceled"
 	case "deadline_exceeded":
 		return "deadline exceeded"
+	case "leadership_lost":
+		return "leadership lost"
 	default:
 		return "startup failed"
 	}
