@@ -2,12 +2,19 @@ package oidc
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/meigma/k8s-aws-oidc/internal/metrics"
+	"github.com/meigma/k8s-aws-oidc/internal/netx"
 )
 
 type stubProvider struct {
@@ -66,7 +73,11 @@ func TestHandler_Discovery(t *testing.T) {
 }
 
 func TestHandler_JWKS_Ready(t *testing.T) {
-	p := &stubProvider{body: []byte(`{"keys":[{"kid":"k1"}]}`), cc: "public, max-age=60", ready: true}
+	p := &stubProvider{
+		body:  []byte(`{"keys":[{"kid":"k1"}]}`),
+		cc:    "public, max-age=60",
+		ready: true,
+	}
 	h := newTestHandler(t, p, nil)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
@@ -143,6 +154,39 @@ func TestHandler_Health(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("ready status = %d", resp.StatusCode)
+	}
+}
+
+func TestHandler_MetricsExposedOnlyOnHealthMux(t *testing.T) {
+	h := newTestHandler(t, &stubProvider{ready: true}, nil)
+	recorder := metrics.New(time.Minute)
+	h.MetricsHandler = recorder.Handler()
+
+	publicSrv := httptest.NewServer(h.ServeMux())
+	defer publicSrv.Close()
+	healthSrv := httptest.NewServer(h.HealthMux())
+	defer healthSrv.Close()
+
+	resp, err := http.Get(healthSrv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("health metrics status = %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "oidc_proxy_process_start_time_seconds") {
+		t.Fatalf("metrics body missing process_start_time metric")
+	}
+
+	resp, err = http.Get(publicSrv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET public /metrics: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("public metrics status = %d, want 404", resp.StatusCode)
 	}
 }
 
@@ -264,4 +308,289 @@ func TestHandler_LogSecretLeakCanary(t *testing.T) {
 	if bytes.Contains(buf.Bytes(), []byte(`"n":"`)) {
 		t.Errorf("log buffer contains JWKS n field")
 	}
+}
+
+func TestHandler_PublicAuditEvents(t *testing.T) {
+	tests := []struct {
+		name              string
+		method            string
+		path              string
+		provider          *stubProvider
+		allowlist         netx.AllowlistConfig
+		src               string
+		wantStatus        int
+		wantRoute         string
+		wantDecision      string
+		wantSourcePresent bool
+		wantSourceIP      string
+	}{
+		{
+			name:   "discovery served",
+			method: http.MethodGet,
+			path:   "/.well-known/openid-configuration",
+			provider: &stubProvider{
+				body:  []byte(`{"keys":[]}`),
+				cc:    "public, max-age=60",
+				ready: true,
+			},
+			wantStatus:        http.StatusOK,
+			wantRoute:         "discovery",
+			wantDecision:      "served",
+			wantSourcePresent: false,
+		},
+		{
+			name:   "jwks served",
+			method: http.MethodGet,
+			path:   "/openid/v1/jwks",
+			provider: &stubProvider{
+				body:  []byte(`{"keys":[{"kid":"k1"}]}`),
+				cc:    "public, max-age=60",
+				ready: true,
+			},
+			wantStatus:        http.StatusOK,
+			wantRoute:         "jwks",
+			wantDecision:      "served",
+			wantSourcePresent: false,
+		},
+		{
+			name:              "jwks not ready",
+			method:            http.MethodGet,
+			path:              "/openid/v1/jwks",
+			provider:          &stubProvider{ready: false},
+			wantStatus:        http.StatusServiceUnavailable,
+			wantRoute:         "jwks",
+			wantDecision:      "jwks_not_ready",
+			wantSourcePresent: false,
+		},
+		{
+			name:   "allowlist missing source",
+			method: http.MethodGet,
+			path:   "/.well-known/openid-configuration",
+			provider: &stubProvider{
+				body:  []byte(`{"keys":[]}`),
+				cc:    "public, max-age=60",
+				ready: true,
+			},
+			allowlist: netx.AllowlistConfig{
+				Enabled: true,
+				CIDRs:   []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+			},
+			wantStatus:        http.StatusForbidden,
+			wantRoute:         "discovery",
+			wantDecision:      "denied_missing_source",
+			wantSourcePresent: false,
+		},
+		{
+			name:   "allowlist blocked cidr",
+			method: http.MethodGet,
+			path:   "/.well-known/openid-configuration",
+			provider: &stubProvider{
+				body:  []byte(`{"keys":[]}`),
+				cc:    "public, max-age=60",
+				ready: true,
+			},
+			allowlist: netx.AllowlistConfig{
+				Enabled: true,
+				CIDRs:   []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+			},
+			src:               "8.8.8.8:42000",
+			wantStatus:        http.StatusForbidden,
+			wantRoute:         "discovery",
+			wantDecision:      "denied_cidr",
+			wantSourcePresent: true,
+			wantSourceIP:      "8.8.8.8",
+		},
+		{
+			name:              "unknown path",
+			method:            http.MethodGet,
+			path:              "/nope",
+			provider:          &stubProvider{ready: true},
+			wantStatus:        http.StatusNotFound,
+			wantRoute:         "unknown",
+			wantDecision:      "not_found",
+			wantSourcePresent: false,
+		},
+		{
+			name:              "method not allowed",
+			method:            http.MethodPost,
+			path:              "/.well-known/openid-configuration",
+			provider:          &stubProvider{ready: true},
+			wantStatus:        http.StatusMethodNotAllowed,
+			wantRoute:         "discovery",
+			wantDecision:      "method_not_allowed",
+			wantSourcePresent: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runPublicAuditCase(t, tt)
+		})
+	}
+}
+
+func runPublicAuditCase(t *testing.T, tt struct {
+	name              string
+	method            string
+	path              string
+	provider          *stubProvider
+	allowlist         netx.AllowlistConfig
+	src               string
+	wantStatus        int
+	wantRoute         string
+	wantDecision      string
+	wantSourcePresent bool
+	wantSourceIP      string
+}) {
+	t.Helper()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	recorder := metrics.New(time.Minute)
+	h, err := NewHandler(
+		"https://oidc.example.ts.net",
+		60*time.Second,
+		tt.provider,
+		nil,
+		logger,
+	)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	h.MetricsHandler = recorder.Handler()
+	wrapped := netx.AuditMiddleware(
+		logger,
+		recorder,
+	)(
+		netx.Middleware(tt.allowlist, logger)(h.ServeMux()),
+	)
+
+	req := httptest.NewRequest(tt.method, tt.path, nil)
+	if tt.src != "" {
+		req = req.WithContext(netx.ContextWithSrc(req.Context(), netip.MustParseAddrPort(tt.src)))
+	}
+	rr := httptest.NewRecorder()
+	wrapped.ServeHTTP(rr, req)
+	if rr.Code != tt.wantStatus {
+		t.Fatalf("status = %d, want %d", rr.Code, tt.wantStatus)
+	}
+
+	records := decodeJSONRecords(t, &buf)
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	assertAuditRecord(t, records[0], tt)
+	assertAuditMetrics(t, scrapeMetrics(t, recorder.Handler()), tt)
+}
+
+func assertAuditRecord(t *testing.T, record map[string]any, tt struct {
+	name              string
+	method            string
+	path              string
+	provider          *stubProvider
+	allowlist         netx.AllowlistConfig
+	src               string
+	wantStatus        int
+	wantRoute         string
+	wantDecision      string
+	wantSourcePresent bool
+	wantSourceIP      string
+}) {
+	t.Helper()
+
+	for key, want := range map[string]any{
+		"event":          "http_request",
+		"component":      "public_http",
+		"route":          tt.wantRoute,
+		"path":           tt.path,
+		"method":         tt.method,
+		"decision":       tt.wantDecision,
+		"source_present": tt.wantSourcePresent,
+	} {
+		if got := record[key]; got != want {
+			t.Fatalf("%s = %v", key, got)
+		}
+	}
+	if got := int(record["status"].(float64)); got != tt.wantStatus {
+		t.Fatalf("status = %d", got)
+	}
+	if _, ok := record["latency_ms"]; !ok {
+		t.Fatal("missing latency_ms")
+	}
+	if tt.wantSourceIP == "" {
+		if _, ok := record["source_ip"]; ok {
+			t.Fatalf("unexpected source_ip = %v", record["source_ip"])
+		}
+		return
+	}
+	if got := record["source_ip"]; got != tt.wantSourceIP {
+		t.Fatalf("source_ip = %v", got)
+	}
+}
+
+func assertAuditMetrics(t *testing.T, metricsBody string, tt struct {
+	name              string
+	method            string
+	path              string
+	provider          *stubProvider
+	allowlist         netx.AllowlistConfig
+	src               string
+	wantStatus        int
+	wantRoute         string
+	wantDecision      string
+	wantSourcePresent bool
+	wantSourceIP      string
+}) {
+	t.Helper()
+
+	wantCounter := `oidc_proxy_http_requests_total{decision="` + tt.wantDecision +
+		`",method="` + tt.method +
+		`",route="` + tt.wantRoute +
+		`",status_code="` + strconv.Itoa(tt.wantStatus) + `"} 1`
+	wantHistogram := `oidc_proxy_http_request_duration_seconds_count{decision="` + tt.wantDecision +
+		`",method="` + tt.method +
+		`",route="` + tt.wantRoute + `"} 1`
+
+	for _, want := range []string{wantCounter, wantHistogram} {
+		if !strings.Contains(metricsBody, want) {
+			t.Fatalf("metrics missing %q\n%s", want, metricsBody)
+		}
+	}
+	if strings.Contains(metricsBody, tt.path) {
+		t.Fatalf("metrics body leaked raw path %q", tt.path)
+	}
+	if tt.wantSourceIP != "" && strings.Contains(metricsBody, tt.wantSourceIP) {
+		t.Fatalf("metrics body leaked source ip %q", tt.wantSourceIP)
+	}
+}
+
+func scrapeMetrics(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("metrics scrape status = %d", rr.Code)
+	}
+	return rr.Body.String()
+}
+
+func decodeJSONRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("unmarshal log: %v", err)
+		}
+		out = append(out, record)
+	}
+	return out
 }

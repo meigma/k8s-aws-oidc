@@ -1,17 +1,22 @@
 package tsrunner
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/meigma/k8s-aws-oidc/internal/metrics"
 )
 
 // fakeServer implements tsnetServer using an in-process [net.Listener].
@@ -713,3 +718,184 @@ func TestDefaultHTTPTimeouts(t *testing.T) {
 // Compile-time assertion that we use httptest correctly elsewhere; if this
 // breaks, fakeServer's listener semantics are off.
 var _ = httptest.NewRecorder
+
+func TestRun_IssuerHostMismatch_LogsStructuredEvent(t *testing.T) {
+	server := newFakeServer(BackendStateRunning)
+	server.certDomains = []string{"oidc.tailnet-foo.ts.net"}
+	factory := func() tsnetServer { return server }
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	recorder := metrics.New(time.Minute)
+	cfg := Config{
+		Handler:            okHandler(),
+		FunnelAddr:         "127.0.0.1:0",
+		StartTimeout:       200 * time.Millisecond,
+		ShutdownTimeout:    200 * time.Millisecond,
+		PollInterval:       20 * time.Millisecond,
+		Logger:             logger,
+		Metrics:            recorder,
+		ExpectedIssuerHost: "wrong.tailnet-bar.ts.net",
+	}
+
+	if err := Run(t.Context(), cfg, factory, &fakeMinter{}); !errors.Is(err, ErrIssuerHostMismatch) {
+		t.Fatalf("Run err = %v, want ErrIssuerHostMismatch", err)
+	}
+
+	records := decodeRunnerLogs(t, &buf)
+	record := findRunnerEvent(t, records, "issuer_host_mismatch")
+	if got := record["component"]; got != "tsnet_runner" {
+		t.Fatalf("component = %v", got)
+	}
+	if strings.Contains(buf.String(), "wrong.tailnet-bar.ts.net") == false {
+		t.Fatal("expected safe host context in logs")
+	}
+	metricsBody := scrapeRunnerMetrics(t, recorder)
+	if !strings.Contains(metricsBody, `oidc_proxy_issuer_host_verification_total{result="failure"} 1`) {
+		t.Fatalf("metrics body missing issuer host failure counter\n%s", metricsBody)
+	}
+}
+
+func TestRun_StartFailure_LogIsSanitized(t *testing.T) {
+	server := newFakeServer("")
+	server.nextStartErr = errors.New("Authorization: Bearer supersecret")
+	factory := func() tsnetServer { return server }
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	recorder := metrics.New(time.Minute)
+	cfg := Config{
+		Handler:         okHandler(),
+		FunnelAddr:      "127.0.0.1:0",
+		StartTimeout:    50 * time.Millisecond,
+		ShutdownTimeout: 50 * time.Millisecond,
+		PollInterval:    20 * time.Millisecond,
+		Logger:          logger,
+		Metrics:         recorder,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, cfg, factory, &fakeMinter{}) }()
+	time.Sleep(120 * time.Millisecond)
+	cancel()
+	<-done
+
+	record := findRunnerEvent(t, decodeRunnerLogs(t, &buf), "tsnet_start_failure")
+	if got := record["error_kind"]; got == "" {
+		t.Fatalf("error_kind = %v", got)
+	}
+	if strings.Contains(buf.String(), "supersecret") {
+		t.Fatal("start failure log contains secret")
+	}
+	metricsBody := scrapeRunnerMetrics(t, recorder)
+	if !strings.Contains(metricsBody, `oidc_proxy_tsnet_start_total{error_kind="operation_failed",result="failure"}`) {
+		t.Fatalf("metrics body missing tsnet start failure counter\n%s", metricsBody)
+	}
+}
+
+func TestRun_MidFlightReauth_LogsRestartEvents(t *testing.T) {
+	first := newFakeServer(BackendStateRunning)
+	second := newFakeServer(BackendStateNeedsLogin)
+	second.stateOnAuthKey = BackendStateRunning
+	idx := atomic.Int32{}
+	factory := func() tsnetServer {
+		i := idx.Add(1) - 1
+		if i == 0 {
+			return first
+		}
+		return second
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	recorder := metrics.New(time.Minute)
+	cfg := Config{
+		Handler:         okHandler(),
+		FunnelAddr:      "127.0.0.1:0",
+		StartTimeout:    200 * time.Millisecond,
+		ShutdownTimeout: 200 * time.Millisecond,
+		PollInterval:    10 * time.Millisecond,
+		Logger:          logger,
+		Metrics:         recorder,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, cfg, factory, &fakeMinter{keys: []string{"tskey-mid"}}) }()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if first.listenCalls.Load() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	first.setState(BackendStateNeedsLogin)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if second.listenCalls.Load() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	records := decodeRunnerLogs(t, &buf)
+	findRunnerEvent(t, records, "public_listener_restart")
+	findRunnerEvent(t, records, "tsnet_state_change")
+	if strings.Contains(buf.String(), "tskey-mid") {
+		t.Fatal("restart logs contain auth key")
+	}
+	metricsBody := scrapeRunnerMetrics(t, recorder)
+	for _, want := range []string{
+		`oidc_proxy_public_listener_restarts_total{reason="needs_login"} 1`,
+		`oidc_proxy_tsnet_state_transitions_total{state="NeedsLogin"}`,
+		`oidc_proxy_tsnet_state_transitions_total{state="Running"}`,
+	} {
+		if !strings.Contains(metricsBody, want) {
+			t.Fatalf("metrics body missing %q\n%s", want, metricsBody)
+		}
+	}
+}
+
+func decodeRunnerLogs(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	out := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("unmarshal log: %v", err)
+		}
+		out = append(out, record)
+	}
+	return out
+}
+
+func findRunnerEvent(t *testing.T, records []map[string]any, event string) map[string]any {
+	t.Helper()
+	for _, record := range records {
+		if record["event"] == event {
+			return record
+		}
+	}
+	t.Fatalf("event %q not found in logs", event)
+	return nil
+}
+
+func scrapeRunnerMetrics(t *testing.T, recorder *metrics.Metrics) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rr := httptest.NewRecorder()
+	recorder.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("metrics scrape status = %d", rr.Code)
+	}
+	return rr.Body.String()
+}

@@ -222,6 +222,36 @@ run_in_cluster_proof() {
     fi
 }
 
+capture_internal_metrics() {
+    local local_port=38080
+    local proxy_log="${CAPTURE_DIR}/metrics-service-proxy.log"
+    local proxy_pid=""
+    local metrics_url="http://127.0.0.1:${local_port}/api/v1/namespaces/${OIDC_NAMESPACE}/services/http:${BRIDGE_RELEASE_NAME}:metrics/proxy/metrics"
+
+    rm -f "$proxy_log"
+    kubectl proxy --port="${local_port}" >"$proxy_log" 2>&1 &
+    proxy_pid=$!
+
+    cleanup() {
+        if [[ -n "${proxy_pid:-}" ]]; then
+            kill "$proxy_pid" >/dev/null 2>&1 || true
+            wait "$proxy_pid" 2>/dev/null || true
+        fi
+    }
+    trap cleanup RETURN
+
+    wait_for_http "$metrics_url" "${CAPTURE_DIR}/metrics-internal.prom" 30 1 || fail "internal metrics endpoint did not become reachable"
+
+    for family in \
+        oidc_proxy_http_requests_total \
+        oidc_proxy_jwks_prime_total \
+        oidc_proxy_process_start_time_seconds \
+        oidc_proxy_tsnet_state_transitions_total
+    do
+        grep -Fq "$family" "${CAPTURE_DIR}/metrics-internal.prom" || fail "metrics scrape is missing ${family}"
+    done
+}
+
 capture_kubernetes_state() {
     kubectl -n "$OIDC_NAMESPACE" get all,secret,serviceaccount,role,rolebinding >"${CAPTURE_DIR}/oidc-system-resources.txt"
     kubectl -n "$APP_NAMESPACE" get all,secret,serviceaccount,job >"${CAPTURE_DIR}/app-resources.txt"
@@ -245,6 +275,7 @@ main() {
     apply_terraform
     host_side_preflight
     run_in_cluster_proof
+    capture_internal_metrics
     capture_kubernetes_state
     log "smoke environment is up"
 }

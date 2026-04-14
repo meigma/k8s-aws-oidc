@@ -9,14 +9,16 @@ The chart OCI artifact is published as `oci://ghcr.io/meigma/k8s-aws-oidc-chart`
 ## What this chart creates
 
 - `Deployment`
+- Optional internal `Service` for `/healthz` and `/metrics`
 - `ServiceAccount`
 - `Role`
 - `RoleBinding`
+- Optional `ServiceMonitor` for Prometheus Operator
 - Optional Kyverno `Policy` for image signature and provenance verification
 - Optional empty state `Secret` for `tailscale.com/ipn/store/kubestore`
 
-This chart does not create a Kubernetes `Service`, `Ingress`, `HPA`,
-`PodDisruptionBudget`, or `NetworkPolicy`.
+This chart does not create an `Ingress`, `HPA`, `PodDisruptionBudget`, or
+`NetworkPolicy`.
 
 ## Prerequisites
 
@@ -73,6 +75,7 @@ metadata. Set `image.tag` to override that default with a different tag, or set
 - `serviceAccount.name`: required when `serviceAccount.create=false`
 - `rbac.create`: create the Role and RoleBinding
 - `kyverno.*`: optional namespaced Kyverno policy that verifies image signatures and SLSA provenance
+- `metrics.*`: internal metrics service and optional ServiceMonitor configuration
 - `sourceIpAllowlist.enabled`: enable source CIDR gating for public requests
 - `sourceIpAllowlist.cidrs`: CIDR list used when the allowlist is enabled
 
@@ -117,5 +120,7 @@ off the root filesystem.
   replica and uses a `Recreate` strategy.
 - The readiness and startup probes hit `GET /healthz` on the internal listener
   at `:8080`.
+- `/metrics` is served on the same internal listener and can be exposed through
+  the optional internal ClusterIP Service.
 - Rotating the external OAuth Secret does not restart the pod automatically.
   Restart the Deployment after credential rotation.

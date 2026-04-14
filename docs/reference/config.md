@@ -30,6 +30,7 @@ This page describes the bridge runtime environment variables loaded by
 | `TS_START_TIMEOUT` | `30s` |
 | `SHUTDOWN_TIMEOUT` | `10s` |
 | `TS_STATUS_POLL_INTERVAL` | `15s` |
+| `LOG_FORMAT` | `json` |
 | `LOG_LEVEL` | `info` |
 | `SOURCE_IP_ALLOWLIST_ENABLED` | `false` |
 | `SOURCE_IP_ALLOWLIST_CIDRS` | unset |
@@ -47,4 +48,3 @@ This page describes the bridge runtime environment variables loaded by
 The service no longer supports overriding the upstream Kubernetes JWKS URL or
 the Tailscale API base URL. It is intentionally pinned to the in-cluster API
 server and the real Tailscale control plane.
-

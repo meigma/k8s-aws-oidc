@@ -17,44 +17,90 @@ import (
 	"syscall"
 
 	"github.com/meigma/k8s-aws-oidc/internal/config"
+	"github.com/meigma/k8s-aws-oidc/internal/logx"
+	"github.com/meigma/k8s-aws-oidc/internal/metrics"
 	"github.com/meigma/k8s-aws-oidc/internal/netx"
 	"github.com/meigma/k8s-aws-oidc/internal/oidc"
 	"github.com/meigma/k8s-aws-oidc/internal/tsrunner"
 )
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+	logger := bootstrapLogger()
+	slog.SetDefault(logger)
+
+	if err := run(logger); err != nil {
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("config: %w", err)
+func run(logger *slog.Logger) error {
+	activeLogger := logger
+	var runErr error
+	defer func() {
+		attrs := []slog.Attr{slog.String("result", "success")}
+		level := slog.LevelInfo
+		if runErr != nil {
+			level = slog.LevelError
+			attrs = append(attrs,
+				slog.String("result", "error"),
+				slog.String("error_kind", processErrorKind(runErr)),
+				slog.String("error", processErrorSummary(runErr)),
+			)
+		}
+		logx.Log(context.Background(), activeLogger, level, "process", "process_stop", "process stopping", attrs...)
+	}()
+	finish := func(err error) error {
+		runErr = err
+		return err
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	cfg, err := config.Load()
+	if err != nil {
+		return finish(fmt.Errorf("config: %w", err))
+	}
+
+	logger, err = logx.NewLogger(os.Stderr, cfg.LogFormat, &slog.HandlerOptions{Level: cfg.LogLevel})
+	if err != nil {
+		return finish(fmt.Errorf("logger: %w", err))
+	}
+	activeLogger = logger
 	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cache, err := startCache(ctx, cfg, logger)
+	issuerURL, err := url.Parse(cfg.IssuerURL)
 	if err != nil {
-		return err
+		return finish(fmt.Errorf("parse issuer URL: %w", err))
+	}
+
+	logx.Info(ctx, logger, "process", "process_start", "process starting",
+		slog.String("hostname", cfg.TSHostname),
+		slog.String("funnel_addr", cfg.FunnelAddr),
+		slog.String("issuer_host", issuerURL.Hostname()),
+		slog.String("log_format", string(cfg.LogFormat)),
+		slog.String("log_level", cfg.LogLevel.String()),
+		slog.Bool("source_ip_allowlist_enabled", cfg.SourceIPAllowlistEnabled),
+		slog.Int("source_ip_allowlist_cidr_count", len(cfg.SourceIPAllowlistCIDRs)),
+	)
+
+	metricsRecorder := metrics.New(cfg.JWKSCacheTTL + cfg.JWKSCacheMaxAgeHeader)
+
+	cache, err := startCache(ctx, cfg, logger, metricsRecorder)
+	if err != nil {
+		return finish(err)
 	}
 
 	var publicReady atomic.Bool
 	handler, err := oidc.NewHandler(cfg.IssuerURL, cfg.DiscoveryMaxAgeHeader, cache, publicReady.Load, logger)
 	if err != nil {
-		return fmt.Errorf("handler: %w", err)
+		return finish(fmt.Errorf("handler: %w", err))
 	}
+	handler.MetricsHandler = metricsRecorder.Handler()
 
-	runnerCfg, err := buildRunnerConfig(cfg, handler, publicReady.Store, logger)
+	runnerCfg, err := buildRunnerConfig(cfg, handler, publicReady.Store, logger, metricsRecorder)
 	if err != nil {
-		return err
+		return finish(err)
 	}
 
 	factory := tsrunner.NewRealServerFactory(tsrunner.RealServerConfig{
@@ -67,21 +113,21 @@ func run() error {
 		ClientSecret: cfg.TSAPIClientSecret,
 		Tags:         []string{cfg.TSTag},
 		Logger:       logger,
+		Metrics:      metricsRecorder,
 	}
 
-	logger.InfoContext(ctx, "starting tsnet runner",
-		"hostname", cfg.TSHostname,
-		"funnel_addr", cfg.FunnelAddr,
-		"issuer", cfg.IssuerURL,
-	)
-
-	return serveAll(ctx, stop, cfg, handler, runnerCfg, factory, minter, logger)
+	return finish(serveAll(ctx, stop, cfg, handler, runnerCfg, factory, minter, logger, metricsRecorder))
 }
 
 // startCache builds the HTTP fetcher, primes the JWKS cache synchronously so
 // startup fails fast on misconfiguration, and launches the background refresh
 // goroutine.
-func startCache(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*oidc.Cache, error) {
+func startCache(
+	ctx context.Context,
+	cfg *config.Config,
+	logger *slog.Logger,
+	recorder *metrics.Metrics,
+) (*oidc.Cache, error) {
 	fetcher, err := oidc.NewHTTPFetcher(
 		oidc.DefaultJWKSUpstreamURL,
 		oidc.DefaultSATokenPath,
@@ -92,7 +138,7 @@ func startCache(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*
 		return nil, fmt.Errorf("jwks fetcher: %w", err)
 	}
 
-	cache := oidc.NewCache(fetcher, cfg.JWKSCacheTTL, cfg.JWKSCacheMaxAgeHeader, logger)
+	cache := oidc.NewCache(fetcher, cfg.JWKSCacheTTL, cfg.JWKSCacheMaxAgeHeader, logger, recorder)
 
 	primeCtx, cancelPrime := context.WithTimeout(ctx, cfg.StartupFetchTimeout)
 	defer cancelPrime()
@@ -109,12 +155,13 @@ func buildRunnerConfig(
 	handler *oidc.Handler,
 	setPublicReady func(bool),
 	logger *slog.Logger,
+	recorder *metrics.Metrics,
 ) (tsrunner.Config, error) {
 	allowlist := netx.Middleware(netx.AllowlistConfig{
 		Enabled: cfg.SourceIPAllowlistEnabled,
 		CIDRs:   cfg.SourceIPAllowlistCIDRs,
 	}, logger)
-	wrapped := allowlist(handler.ServeMux())
+	wrapped := netx.AuditMiddleware(logger, recorder)(allowlist(handler.ServeMux()))
 
 	issuerURL, err := url.Parse(cfg.IssuerURL)
 	if err != nil {
@@ -130,6 +177,7 @@ func buildRunnerConfig(
 		ShutdownTimeout:    cfg.ShutdownTimeout,
 		PollInterval:       cfg.TSStatusPollInterval,
 		Logger:             logger,
+		Metrics:            recorder,
 		SetPublicReady:     setPublicReady,
 		ExpectedIssuerHost: issuerURL.Hostname(),
 	}, nil
@@ -146,8 +194,9 @@ func serveAll(
 	factory tsrunner.ServerFactory,
 	minter tsrunner.AuthKeyMinter,
 	logger *slog.Logger,
+	recorder *metrics.Metrics,
 ) error {
-	healthSrv, healthErrCh, err := startHealthServer(ctx, cfg, handler, runnerCfg.HTTPTimeouts, logger)
+	healthSrv, healthErrCh, err := startHealthServer(ctx, cfg, handler, runnerCfg.HTTPTimeouts, logger, recorder)
 	if err != nil {
 		return err
 	}
@@ -189,6 +238,7 @@ func startHealthServer(
 	handler *oidc.Handler,
 	timeouts tsrunner.HTTPTimeouts,
 	logger *slog.Logger,
+	recorder *metrics.Metrics,
 ) (*http.Server, <-chan error, error) {
 	var listenCfg net.ListenConfig
 	ln, err := listenCfg.Listen(ctx, "tcp", cfg.HealthAddr)
@@ -205,7 +255,12 @@ func startHealthServer(
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		logger.InfoContext(ctx, "starting health server", "addr", cfg.HealthAddr)
+		if recorder != nil {
+			recorder.RecordHealthServerStart()
+		}
+		logx.Info(ctx, logger, "health_http", "health_server_start", "health server started",
+			slog.String("addr", cfg.HealthAddr),
+		)
 		if serveErr := srv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("health server: %w", serveErr)
 			return
@@ -222,4 +277,38 @@ func firstErr(errs ...error) error {
 		}
 	}
 	return nil
+}
+
+func bootstrapLogger() *slog.Logger {
+	format := logx.FormatJSON
+	if parsed, err := logx.ParseFormat(os.Getenv("LOG_FORMAT")); err == nil {
+		format = parsed
+	}
+	logger, err := logx.NewLogger(os.Stderr, format, &slog.HandlerOptions{Level: slog.LevelInfo})
+	if err != nil {
+		return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	}
+	return logger
+}
+
+func processErrorKind(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	default:
+		return "startup_failed"
+	}
+}
+
+func processErrorSummary(err error) string {
+	switch processErrorKind(err) {
+	case "context_canceled":
+		return "context canceled"
+	case "deadline_exceeded":
+		return "deadline exceeded"
+	default:
+		return "startup failed"
+	}
 }

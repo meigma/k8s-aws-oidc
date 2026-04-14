@@ -82,8 +82,8 @@ just up
 7. run a host-side web-identity STS preflight
 8. run an in-cluster AWS CLI proof job
 
-Generated files, logs, Terraform state, rendered manifests, and captures are
-kept under `tmp/smoke/`.
+Generated files, logs, Terraform state, rendered manifests, metrics scrapes,
+and captures are kept under `tmp/smoke/`.
 
 If the smoke config in `.env` changes after an environment is already up, the
 harness will stop and tell you to tear it down first.

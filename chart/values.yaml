@@ -23,11 +23,31 @@ imagePullSecrets: []
 # logLevel is the slog level passed to the application.
 logLevel: info
 
+# logFormat selects the slog handler format. Supported values: json, text.
+logFormat: json
+
 # funnelAddr is the public Funnel listener address passed to the application.
 funnelAddr: ":443"
 
 # healthAddr is the internal health listener address passed to the application.
 healthAddr: ":8080"
+
+# metrics configures the internal metrics endpoint and scrape resources.
+# metrics.enabled controls whether the chart renders metrics-oriented Kubernetes resources.
+# The application always serves /metrics on the internal listener.
+metrics:
+  enabled: true
+  path: /metrics
+  service:
+    enabled: true
+    port: 8080
+    labels: {}
+    annotations: {}
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    additionalLabels: {}
 
 # tailscale.hostname is the Funnel hostname presented by tsnet.
 # tailscale.tag is the Tailscale tag advertised when minting auth keys.
