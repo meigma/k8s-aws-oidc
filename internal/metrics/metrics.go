@@ -66,6 +66,13 @@ func New(jwksStaleWindow time.Duration) *Metrics {
 }
 
 func (m *Metrics) initCollectors() {
+	m.initHTTPCollectors()
+	m.initJWKSCollectors()
+	m.initTSNetCollectors()
+	m.initHealthCollectors()
+}
+
+func (m *Metrics) initHTTPCollectors() {
 	m.httpRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
@@ -83,6 +90,9 @@ func (m *Metrics) initCollectors() {
 		},
 		[]string{"route", "method", "decision"},
 	)
+}
+
+func (m *Metrics) initJWKSCollectors() {
 	m.jwksPrimeTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
@@ -107,6 +117,9 @@ func (m *Metrics) initCollectors() {
 		},
 		[]string{"error_kind"},
 	)
+}
+
+func (m *Metrics) initTSNetCollectors() {
 	m.tsnetStartTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
@@ -155,6 +168,9 @@ func (m *Metrics) initCollectors() {
 		},
 		[]string{"state"},
 	)
+}
+
+func (m *Metrics) initHealthCollectors() {
 	m.processStartTimeSeconds = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: namespace,

@@ -36,7 +36,7 @@ func TestRunWithLeaderElection_LeaderInvokesPublicRunner(t *testing.T) {
 	state.SetLeaderElectionEnabled(true)
 	recorder := metrics.New(time.Minute)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	var calls atomic.Int32
@@ -82,7 +82,7 @@ func TestRunWithLeaderElection_FollowerDoesNotInvokePublicRunner(t *testing.T) {
 	state := &runtimeState{}
 	state.SetLeaderElectionEnabled(true)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	var calls atomic.Int32
@@ -153,7 +153,7 @@ func TestRunWithLeaderElection_PublicRunnerFailureReturnsError(t *testing.T) {
 	state := &runtimeState{}
 	state.SetLeaderElectionEnabled(true)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	wantErr := errors.New("boom")

@@ -50,6 +50,12 @@ type Config struct {
 	TSStatusPollInterval time.Duration
 }
 
+type durationTarget struct {
+	name         string
+	defaultValue time.Duration
+	target       *time.Duration
+}
+
 const (
 	defaultJWKSCacheTTL         = 60 * time.Second
 	defaultJWKSCacheMaxAge      = 60 * time.Second
@@ -93,64 +99,87 @@ func Load() (*Config, error) {
 		LeaderElectionIdentity:  envDefault("LEADER_ELECTION_IDENTITY", os.Getenv("POD_NAME")),
 	}
 
-	var err error
-	if cfg.JWKSCacheTTL, err = envDuration("JWKS_CACHE_TTL", defaultJWKSCacheTTL); err != nil {
+	if err := loadDurations(cfg); err != nil {
 		return nil, err
 	}
-	if cfg.JWKSCacheMaxAgeHeader, err = envDuration("JWKS_CACHE_MAX_AGE_HEADER", defaultJWKSCacheMaxAge); err != nil {
+	if err := loadLogging(cfg); err != nil {
 		return nil, err
 	}
-	if cfg.DiscoveryMaxAgeHeader, err = envDuration("DISCOVERY_MAX_AGE_HEADER", defaultDiscoveryMaxAge); err != nil {
+	if err := loadAllowlist(cfg); err != nil {
 		return nil, err
-	}
-	if cfg.StartupFetchTimeout, err = envDuration("STARTUP_FETCH_TIMEOUT", defaultStartupFetchTimeout); err != nil {
-		return nil, err
-	}
-	if cfg.TSStartTimeout, err = envDuration("TS_START_TIMEOUT", defaultTSStartTimeout); err != nil {
-		return nil, err
-	}
-	if cfg.ShutdownTimeout, err = envDuration("SHUTDOWN_TIMEOUT", defaultShutdownTimeout); err != nil {
-		return nil, err
-	}
-	if cfg.TSStatusPollInterval, err = envDuration("TS_STATUS_POLL_INTERVAL", defaultTSStatusPollInterval); err != nil {
-		return nil, err
-	}
-	if cfg.LeaderElectionLeaseDuration, err = envDuration("LEADER_ELECTION_LEASE_DURATION", defaultLeaderLeaseDuration); err != nil {
-		return nil, err
-	}
-	if cfg.LeaderElectionRenewDeadline, err = envDuration("LEADER_ELECTION_RENEW_DEADLINE", defaultLeaderRenewDeadline); err != nil {
-		return nil, err
-	}
-	if cfg.LeaderElectionRetryPeriod, err = envDuration("LEADER_ELECTION_RETRY_PERIOD", defaultLeaderRetryPeriod); err != nil {
-		return nil, err
-	}
-
-	if cfg.LogLevel, err = parseLogLevel(envDefault("LOG_LEVEL", "info")); err != nil {
-		return nil, err
-	}
-	if cfg.LogFormat, err = logx.ParseFormat(envDefault("LOG_FORMAT", string(logx.FormatJSON))); err != nil {
-		return nil, err
-	}
-
-	cfg.SourceIPAllowlistEnabled = envBool("SOURCE_IP_ALLOWLIST_ENABLED")
-	if raw := os.Getenv("SOURCE_IP_ALLOWLIST_CIDRS"); raw != "" {
-		for item := range strings.SplitSeq(raw, ",") {
-			item = strings.TrimSpace(item)
-			if item == "" {
-				continue
-			}
-			p, perr := netip.ParsePrefix(item)
-			if perr != nil {
-				return nil, fmt.Errorf("SOURCE_IP_ALLOWLIST_CIDRS: invalid CIDR %q: %w", item, perr)
-			}
-			cfg.SourceIPAllowlistCIDRs = append(cfg.SourceIPAllowlistCIDRs, p)
-		}
 	}
 
 	if vErr := cfg.validate(); vErr != nil {
 		return nil, vErr
 	}
 	return cfg, nil
+}
+
+func loadDurations(cfg *Config) error {
+	settings := []durationTarget{
+		{name: "JWKS_CACHE_TTL", defaultValue: defaultJWKSCacheTTL, target: &cfg.JWKSCacheTTL},
+		{name: "JWKS_CACHE_MAX_AGE_HEADER", defaultValue: defaultJWKSCacheMaxAge, target: &cfg.JWKSCacheMaxAgeHeader},
+		{name: "DISCOVERY_MAX_AGE_HEADER", defaultValue: defaultDiscoveryMaxAge, target: &cfg.DiscoveryMaxAgeHeader},
+		{name: "STARTUP_FETCH_TIMEOUT", defaultValue: defaultStartupFetchTimeout, target: &cfg.StartupFetchTimeout},
+		{name: "TS_START_TIMEOUT", defaultValue: defaultTSStartTimeout, target: &cfg.TSStartTimeout},
+		{name: "SHUTDOWN_TIMEOUT", defaultValue: defaultShutdownTimeout, target: &cfg.ShutdownTimeout},
+		{name: "TS_STATUS_POLL_INTERVAL", defaultValue: defaultTSStatusPollInterval, target: &cfg.TSStatusPollInterval},
+		{
+			name:         "LEADER_ELECTION_LEASE_DURATION",
+			defaultValue: defaultLeaderLeaseDuration,
+			target:       &cfg.LeaderElectionLeaseDuration,
+		},
+		{
+			name:         "LEADER_ELECTION_RENEW_DEADLINE",
+			defaultValue: defaultLeaderRenewDeadline,
+			target:       &cfg.LeaderElectionRenewDeadline,
+		},
+		{
+			name:         "LEADER_ELECTION_RETRY_PERIOD",
+			defaultValue: defaultLeaderRetryPeriod,
+			target:       &cfg.LeaderElectionRetryPeriod,
+		},
+	}
+
+	for _, setting := range settings {
+		value, err := envDuration(setting.name, setting.defaultValue)
+		if err != nil {
+			return err
+		}
+		*setting.target = value
+	}
+	return nil
+}
+
+func loadLogging(cfg *Config) error {
+	var err error
+	if cfg.LogLevel, err = parseLogLevel(envDefault("LOG_LEVEL", "info")); err != nil {
+		return err
+	}
+	if cfg.LogFormat, err = logx.ParseFormat(envDefault("LOG_FORMAT", string(logx.FormatJSON))); err != nil {
+		return err
+	}
+	return nil
+}
+
+func loadAllowlist(cfg *Config) error {
+	cfg.SourceIPAllowlistEnabled = envBool("SOURCE_IP_ALLOWLIST_ENABLED")
+	raw := os.Getenv("SOURCE_IP_ALLOWLIST_CIDRS")
+	if raw == "" {
+		return nil
+	}
+	for item := range strings.SplitSeq(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(item)
+		if err != nil {
+			return fmt.Errorf("SOURCE_IP_ALLOWLIST_CIDRS: invalid CIDR %q: %w", item, err)
+		}
+		cfg.SourceIPAllowlistCIDRs = append(cfg.SourceIPAllowlistCIDRs, prefix)
+	}
+	return nil
 }
 
 func (c *Config) validate() error {
@@ -229,10 +258,18 @@ func (c *Config) validateLeaderElection() error {
 		return errors.New("LEADER_ELECTION_IDENTITY is required when LEADER_ELECTION_ENABLED=true")
 	}
 	if c.LeaderElectionLeaseDuration <= c.LeaderElectionRenewDeadline {
-		return fmt.Errorf("LEADER_ELECTION_LEASE_DURATION must be greater than LEADER_ELECTION_RENEW_DEADLINE (%s <= %s)", c.LeaderElectionLeaseDuration, c.LeaderElectionRenewDeadline)
+		return fmt.Errorf(
+			"LEADER_ELECTION_LEASE_DURATION must be greater than LEADER_ELECTION_RENEW_DEADLINE (%s <= %s)",
+			c.LeaderElectionLeaseDuration,
+			c.LeaderElectionRenewDeadline,
+		)
 	}
 	if c.LeaderElectionRenewDeadline <= c.LeaderElectionRetryPeriod {
-		return fmt.Errorf("LEADER_ELECTION_RENEW_DEADLINE must be greater than LEADER_ELECTION_RETRY_PERIOD (%s <= %s)", c.LeaderElectionRenewDeadline, c.LeaderElectionRetryPeriod)
+		return fmt.Errorf(
+			"LEADER_ELECTION_RENEW_DEADLINE must be greater than LEADER_ELECTION_RETRY_PERIOD (%s <= %s)",
+			c.LeaderElectionRenewDeadline,
+			c.LeaderElectionRetryPeriod,
+		)
 	}
 	return nil
 }

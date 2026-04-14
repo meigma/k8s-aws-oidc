@@ -36,19 +36,7 @@ func main() {
 func run(logger *slog.Logger) error {
 	activeLogger := logger
 	var runErr error
-	defer func() {
-		attrs := []slog.Attr{slog.String("result", "success")}
-		level := slog.LevelInfo
-		if runErr != nil {
-			level = slog.LevelError
-			attrs = append(attrs,
-				slog.String("result", "error"),
-				slog.String("error_kind", processErrorKind(runErr)),
-				slog.String("error", processErrorSummary(runErr)),
-			)
-		}
-		logx.Log(context.Background(), activeLogger, level, "process", "process_stop", "process stopping", attrs...)
-	}()
+	defer logProcessStop(&activeLogger, &runErr)
 	finish := func(err error) error {
 		runErr = err
 		return err
@@ -69,13 +57,6 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	state := &runtimeState{}
-	state.SetLeaderElectionEnabled(cfg.LeaderElectionEnabled)
-	go func() {
-		<-ctx.Done()
-		state.SetShuttingDown(true)
-	}()
-
 	issuerURL, err := url.Parse(cfg.IssuerURL)
 	if err != nil {
 		return finish(fmt.Errorf("parse issuer URL: %w", err))
@@ -91,11 +72,38 @@ func run(logger *slog.Logger) error {
 		slog.Int("source_ip_allowlist_cidr_count", len(cfg.SourceIPAllowlistCIDRs)),
 	)
 
-	metricsRecorder := metrics.New(cfg.JWKSCacheTTL + cfg.JWKSCacheMaxAgeHeader)
-
-	cache, err := startCache(ctx, cfg, logger, metricsRecorder)
+	process, err := setupProcess(ctx, cfg, logger)
 	if err != nil {
 		return finish(err)
+	}
+
+	return finish(
+		runProcessWithHealthServer(
+			ctx,
+			stop,
+			cfg,
+			process.handler,
+			process.timeouts,
+			logger,
+			process.metrics,
+			process.runner,
+		),
+	)
+}
+
+type processConfig struct {
+	handler  *oidc.Handler
+	metrics  *metrics.Metrics
+	runner   func(context.Context) error
+	timeouts tsrunner.HTTPTimeouts
+}
+
+func setupProcess(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*processConfig, error) {
+	state := newRuntimeState(ctx, cfg.LeaderElectionEnabled)
+	metricsRecorder := metrics.New(cfg.JWKSCacheTTL + cfg.JWKSCacheMaxAgeHeader)
+	cache, err := startCache(ctx, cfg, logger, metricsRecorder)
+	if err != nil {
+		return nil, err
 	}
 
 	if !cfg.LeaderElectionEnabled {
@@ -103,47 +111,119 @@ func run(logger *slog.Logger) error {
 		metricsRecorder.SetLeader(true)
 	}
 
-	handler, err := oidc.NewHandler(cfg.IssuerURL, cfg.DiscoveryMaxAgeHeader, cache, state.PublicReady, logger)
+	handler, err := buildOIDCHandler(cfg, cache, state, logger, metricsRecorder)
 	if err != nil {
-		return finish(fmt.Errorf("handler: %w", err))
+		return nil, fmt.Errorf("handler: %w", err)
+	}
+	runnerCfg, err := buildRunnerConfig(
+		cfg,
+		handler,
+		func(v bool) {
+			state.SetPublicReady(v)
+			metricsRecorder.SetPublicReady(v)
+		},
+		logger,
+		metricsRecorder,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	publicRunner := func(runCtx context.Context) error {
+		return tsrunner.Run(
+			runCtx,
+			runnerCfg,
+			buildTSNetFactory(cfg, logger),
+			buildAuthMinter(cfg, logger, metricsRecorder),
+		)
+	}
+	processRunner := publicRunner
+	if cfg.LeaderElectionEnabled {
+		processRunner = func(runCtx context.Context) error {
+			return runWithLeaderElection(
+				runCtx,
+				cfg,
+				state,
+				logger,
+				metricsRecorder,
+				leader.Run,
+				publicRunner,
+			)
+		}
+	}
+
+	return &processConfig{
+		handler:  handler,
+		metrics:  metricsRecorder,
+		runner:   processRunner,
+		timeouts: runnerCfg.HTTPTimeouts,
+	}, nil
+}
+
+func newRuntimeState(ctx context.Context, leaderElectionEnabled bool) *runtimeState {
+	state := &runtimeState{}
+	state.SetLeaderElectionEnabled(leaderElectionEnabled)
+	go func() {
+		<-ctx.Done()
+		state.SetShuttingDown(true)
+	}()
+	return state
+}
+
+func buildOIDCHandler(
+	cfg *config.Config,
+	cache *oidc.Cache,
+	state *runtimeState,
+	logger *slog.Logger,
+	metricsRecorder *metrics.Metrics,
+) (*oidc.Handler, error) {
+	handler, err := oidc.NewHandler(
+		cfg.IssuerURL,
+		cfg.DiscoveryMaxAgeHeader,
+		cache,
+		state.PublicReady,
+		logger,
+	)
+	if err != nil {
+		return nil, err
 	}
 	handler.MetricsHandler = metricsRecorder.Handler()
 	handler.Live = state.Live
 	handler.Ready = func() bool { return state.Ready(cache.Ready()) }
 	handler.LeaderReady = func() bool { return state.LeaderReady(cache.Ready()) }
+	return handler, nil
+}
 
-	runnerCfg, err := buildRunnerConfig(cfg, handler, func(v bool) {
-		state.SetPublicReady(v)
-		metricsRecorder.SetPublicReady(v)
-	}, logger, metricsRecorder)
-	if err != nil {
-		return finish(err)
-	}
-
-	factory := tsrunner.NewRealServerFactory(tsrunner.RealServerConfig{
+func buildTSNetFactory(cfg *config.Config, logger *slog.Logger) tsrunner.ServerFactory {
+	return tsrunner.NewRealServerFactory(tsrunner.RealServerConfig{
 		Hostname:    cfg.TSHostname,
 		StateSecret: cfg.TSStateSecret,
 		Logger:      logger,
 	})
-	minter := &tsrunner.OAuthMinter{
+}
+
+func buildAuthMinter(cfg *config.Config, logger *slog.Logger, recorder *metrics.Metrics) tsrunner.AuthKeyMinter {
+	return &tsrunner.OAuthMinter{
 		ClientID:     cfg.TSAPIClientID,
 		ClientSecret: cfg.TSAPIClientSecret,
 		Tags:         []string{cfg.TSTag},
 		Logger:       logger,
-		Metrics:      metricsRecorder,
+		Metrics:      recorder,
 	}
+}
 
-	publicRunner := func(runCtx context.Context) error {
-		return tsrunner.Run(runCtx, runnerCfg, factory, minter)
+func logProcessStop(activeLogger **slog.Logger, runErr *error) {
+	attrs := []slog.Attr{slog.String("result", "success")}
+	level := slog.LevelInfo
+	if *runErr != nil {
+		level = slog.LevelError
+		attrs = append(attrs,
+			slog.String("result", "error"),
+			slog.String("error_kind", processErrorKind(*runErr)),
+			slog.String("error", processErrorSummary(*runErr)),
+		)
 	}
-	processRunner := publicRunner
-	if cfg.LeaderElectionEnabled {
-		processRunner = func(runCtx context.Context) error {
-			return runWithLeaderElection(runCtx, cfg, state, logger, metricsRecorder, leader.Run, publicRunner)
-		}
-	}
-
-	return finish(runProcessWithHealthServer(ctx, stop, cfg, handler, runnerCfg.HTTPTimeouts, logger, metricsRecorder, processRunner))
+	logx.Log(context.Background(), *activeLogger, level, "process", "process_stop", "process stopping", attrs...)
 }
 
 // startCache builds the HTTP fetcher, primes the JWKS cache synchronously so

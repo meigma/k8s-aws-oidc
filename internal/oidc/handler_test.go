@@ -26,13 +26,13 @@ type stubProvider struct {
 func (s *stubProvider) Current() ([]byte, string) { return s.body, s.cc }
 func (s *stubProvider) Ready() bool               { return s.ready }
 
-func newTestHandler(t *testing.T, p JWKSProvider, publicReady func() bool) *Handler {
+func newTestHandler(t *testing.T, p JWKSProvider) *Handler {
 	t.Helper()
 	h, err := NewHandler(
 		"https://oidc.example.ts.net",
 		3600*time.Second,
 		p,
-		publicReady,
+		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
 	if err != nil {
@@ -43,7 +43,7 @@ func newTestHandler(t *testing.T, p JWKSProvider, publicReady func() bool) *Hand
 
 func TestHandler_Discovery(t *testing.T) {
 	p := &stubProvider{body: []byte(`{"keys":[]}`), cc: "public, max-age=60", ready: true}
-	h := newTestHandler(t, p, nil)
+	h := newTestHandler(t, p)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -78,7 +78,7 @@ func TestHandler_JWKS_Ready(t *testing.T) {
 		cc:    "public, max-age=60",
 		ready: true,
 	}
-	h := newTestHandler(t, p, nil)
+	h := newTestHandler(t, p)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -105,7 +105,7 @@ func TestHandler_JWKS_Ready(t *testing.T) {
 
 func TestHandler_JWKS_NotReady(t *testing.T) {
 	p := &stubProvider{ready: false}
-	h := newTestHandler(t, p, nil)
+	h := newTestHandler(t, p)
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -125,7 +125,7 @@ func TestHandler_Health(t *testing.T) {
 	livez := true
 	readyz := false
 	leaderz := false
-	h := newTestHandler(t, p, nil)
+	h := newTestHandler(t, p)
 	h.Live = func() bool { return livez }
 	h.Ready = func() bool { return readyz }
 	h.LeaderReady = func() bool { return leaderz }
@@ -192,7 +192,7 @@ func TestHandler_Health(t *testing.T) {
 }
 
 func TestHandler_MetricsExposedOnlyOnHealthMux(t *testing.T) {
-	h := newTestHandler(t, &stubProvider{ready: true}, nil)
+	h := newTestHandler(t, &stubProvider{ready: true})
 	recorder := metrics.New(time.Minute)
 	h.MetricsHandler = recorder.Handler()
 
@@ -225,7 +225,7 @@ func TestHandler_MetricsExposedOnlyOnHealthMux(t *testing.T) {
 }
 
 func TestHandler_PostReturns405(t *testing.T) {
-	h := newTestHandler(t, &stubProvider{ready: true}, nil)
+	h := newTestHandler(t, &stubProvider{ready: true})
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -240,7 +240,7 @@ func TestHandler_PostReturns405(t *testing.T) {
 }
 
 func TestHandler_UnknownPathReturns404(t *testing.T) {
-	h := newTestHandler(t, &stubProvider{ready: true}, nil)
+	h := newTestHandler(t, &stubProvider{ready: true})
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -255,7 +255,7 @@ func TestHandler_UnknownPathReturns404(t *testing.T) {
 }
 
 func TestHandler_PublicMuxDoesNotExposeHealth(t *testing.T) {
-	h := newTestHandler(t, &stubProvider{ready: true}, nil)
+	h := newTestHandler(t, &stubProvider{ready: true})
 	srv := httptest.NewServer(h.ServeMux())
 	defer srv.Close()
 
@@ -271,7 +271,7 @@ func TestHandler_PublicMuxDoesNotExposeHealth(t *testing.T) {
 
 func TestHandler_HEAD(t *testing.T) {
 	p := &stubProvider{body: []byte(`{"keys":[]}`), cc: "public, max-age=60", ready: true}
-	h := newTestHandler(t, p, nil)
+	h := newTestHandler(t, p)
 	publicSrv := httptest.NewServer(h.ServeMux())
 	defer publicSrv.Close()
 	healthSrv := httptest.NewServer(h.HealthMux())

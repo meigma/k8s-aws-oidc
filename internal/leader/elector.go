@@ -78,10 +78,18 @@ func (c *Config) validate() error {
 		return fmt.Errorf("leader election: retry period must be positive, got %s", c.RetryPeriod)
 	}
 	if c.LeaseDuration <= c.RenewDeadline {
-		return fmt.Errorf("leader election: lease duration %s must be greater than renew deadline %s", c.LeaseDuration, c.RenewDeadline)
+		return fmt.Errorf(
+			"leader election: lease duration %s must be greater than renew deadline %s",
+			c.LeaseDuration,
+			c.RenewDeadline,
+		)
 	}
 	if c.RenewDeadline <= c.RetryPeriod {
-		return fmt.Errorf("leader election: renew deadline %s must be greater than retry period %s", c.RenewDeadline, c.RetryPeriod)
+		return fmt.Errorf(
+			"leader election: renew deadline %s must be greater than retry period %s",
+			c.RenewDeadline,
+			c.RetryPeriod,
+		)
 	}
 	return nil
 }
