@@ -135,8 +135,8 @@ jobs:
       packages: write
       id-token: write
     outputs:
-      image_name: ${{ steps.metadata.outputs.image_name }}
-      image_digest: ${{ steps.metadata.outputs.image_digest }}
+      image_name: ${{ steps.image.outputs.image_name }}
+      image_digest: ${{ steps.image.outputs.image_digest }}
       chart_name: ${{ steps.metadata.outputs.chart_name }}
       chart_digest: ${{ steps.metadata.outputs.chart_digest }}
     steps:
@@ -222,6 +222,27 @@ jobs:
           GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.tag }}
           GORELEASER_DISABLE_GITHUB_RELEASE: ${{ inputs.disable_github_release }}
 
+      - name: Resolve Published Image Digest
+        id: image
+        run: |
+          set -euo pipefail
+
+          version="${{ steps.version.outputs.value }}"
+          image_name="ghcr.io/meigma/k8s-aws-oidc"
+          image_digest="$(docker buildx imagetools inspect "${image_name}:${version}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+
+          if [ -z "${image_digest}" ]; then
+            echo "failed to resolve published image digest" >&2
+            exit 1
+          fi
+
+          printf '%s  %s\n' "${image_digest#sha256:}" "${image_name}@${image_digest}" > dist/digests.txt
+
+          {
+            echo "image_name=${image_name}"
+            echo "image_digest=${image_digest}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Publish Helm Chart
         id: chart
         run: |
@@ -229,9 +250,15 @@ jobs:
 
           version="${{ steps.version.outputs.value }}"
           chart_name="ghcr.io/meigma/k8s-aws-oidc-chart"
+          chart_dir="$(mktemp -d)/chart"
           chart_package="dist/k8s-aws-oidc-chart-${version}.tgz"
+          image_digest="${{ steps.image.outputs.image_digest }}"
 
-          helm package chart/ \
+          cp -R chart/. "${chart_dir}/"
+
+          perl -0pi -e 's/\nappVersion:\s*[^\n]+\n/\nappVersion: '"${version}"'\nannotations:\n  io.github.meigma\/default-image-digest: "'"${image_digest}"'"\n/' "${chart_dir}/Chart.yaml"
+
+          helm package "${chart_dir}" \
             --version "${version}" \
             --app-version "${version}" \
             -d dist/
@@ -259,19 +286,12 @@ jobs:
       - name: Generate Image SBOM
         id: image-sbom
         run: |
+          set -euo pipefail
+
           version="${{ steps.version.outputs.value }}"
-          image_name="ghcr.io/meigma/k8s-aws-oidc"
-          image_digest="$(docker buildx imagetools inspect "${image_name}:${version}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          image_name="${{ steps.image.outputs.image_name }}"
+          image_digest="${{ steps.image.outputs.image_digest }}"
           sbom_path="dist/k8s-aws-oidc_${version}_image.spdx.json"
-
-          if [ -z "${image_digest}" ]; then
-            echo "failed to resolve published image digest" >&2
-            exit 1
-          fi
-
-          if [ ! -f dist/digests.txt ]; then
-            printf '%s  %s\n' "${image_digest#sha256:}" "${image_name}@${image_digest}" > dist/digests.txt
-          fi
 
           syft "${image_name}@${image_digest}" -o "spdx-json=${sbom_path}"
           cosign attach sbom --sbom "${sbom_path}" --type spdx "${image_name}@${image_digest}"
@@ -293,15 +313,15 @@ jobs:
         id: metadata
         run: |
           cat > dist/oci-attestation.env <<EOF
-          IMAGE_NAME=${{ steps.image-sbom.outputs.image_name }}
-          IMAGE_DIGEST=${{ steps.image-sbom.outputs.image_digest }}
+          IMAGE_NAME=${{ steps.image.outputs.image_name }}
+          IMAGE_DIGEST=${{ steps.image.outputs.image_digest }}
           CHART_NAME=${{ steps.chart.outputs.chart_name }}
           CHART_DIGEST=${{ steps.chart.outputs.chart_digest }}
           EOF
 
           {
-            echo "image_name=${{ steps.image-sbom.outputs.image_name }}"
-            echo "image_digest=${{ steps.image-sbom.outputs.image_digest }}"
+            echo "image_name=${{ steps.image.outputs.image_name }}"
+            echo "image_digest=${{ steps.image.outputs.image_digest }}"
             echo "chart_name=${{ steps.chart.outputs.chart_name }}"
             echo "chart_digest=${{ steps.chart.outputs.chart_digest }}"
           } >> "${GITHUB_OUTPUT}"

@@ -29,7 +29,7 @@ The chart assumes:
 ## Minimal install
 
 ```bash
-helm upgrade --install oidc-bridge ./chart \
+helm upgrade --install oidc-bridge oci://ghcr.io/meigma/k8s-aws-oidc-chart \
   --namespace oidc-system \
   --create-namespace \
   --set issuerUrl=https://oidc.example.tailnet.ts.net \
@@ -37,6 +37,11 @@ helm upgrade --install oidc-bridge ./chart \
   --set tailscale.tag=tag:cat-k8s-oidc \
   --set tailscale.oauthSecret.name=tailscale-oauth
 ```
+
+Use the published OCI chart for production installs. It embeds the release image
+digest so the deployed image is pinned by default. A local `./chart` install is
+still useful for development, but it falls back to the chart `appVersion` tag
+unless you set `image.digest` yourself.
 
 ## Common adaptations
 
@@ -68,6 +73,19 @@ by default.
 
 Use it only if you are confident the callers you care about are stable enough
 to allowlist.
+
+### Enforce image provenance with Kyverno
+
+If Kyverno 1.13 or newer is already installed, the chart can render a
+namespaced `Policy` which verifies the workload image signature and SLSA
+provenance before admission.
+
+```bash
+--set kyverno.enabled=true
+```
+
+Start with `--set kyverno.validationFailureAction=Audit` if you want to inspect
+policy results before switching to `Enforce`.
 
 ## Upgrade checks
 

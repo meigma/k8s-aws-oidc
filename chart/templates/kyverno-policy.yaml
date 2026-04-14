@@ -1,0 +1,85 @@
+{{- if .Values.kyverno.enabled }}
+apiVersion: kyverno.io/v1
+kind: Policy
+metadata:
+  name: {{ printf "%s-image-verification" (include "k8s-aws-oidc-chart.fullname" .) | trunc 63 | trimSuffix "-" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-aws-oidc-chart.labels" . | nindent 4 }}
+spec:
+  background: false
+  validationFailureAction: {{ .Values.kyverno.validationFailureAction }}
+  webhookTimeoutSeconds: {{ .Values.kyverno.webhookTimeoutSeconds }}
+  rules:
+    - name: verify-image-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+{{- if .Values.kyverno.imageReferences }}
+{{ toYaml .Values.kyverno.imageReferences | nindent 12 }}
+{{- else }}
+            - {{ printf "%s*" .Values.image.repository | quote }}
+{{- end }}
+          required: true
+          mutateDigest: {{ .Values.kyverno.mutateDigest }}
+          verifyDigest: {{ .Values.kyverno.verifyDigest }}
+          type: SigstoreBundle
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    issuer: {{ .Values.kyverno.keyless.issuer | quote }}
+                    subjectRegExp: {{ .Values.kyverno.keyless.subjectRegExp | quote }}
+                    rekor:
+                      url: {{ .Values.kyverno.keyless.rekorUrl | quote }}
+{{- if .Values.kyverno.provenance.enabled }}
+    - name: verify-image-provenance
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+{{- if .Values.kyverno.imageReferences }}
+{{ toYaml .Values.kyverno.imageReferences | nindent 12 }}
+{{- else }}
+            - {{ printf "%s*" .Values.image.repository | quote }}
+{{- end }}
+          required: true
+          mutateDigest: {{ .Values.kyverno.mutateDigest }}
+          verifyDigest: {{ .Values.kyverno.verifyDigest }}
+          type: SigstoreBundle
+          attestations:
+            - type: {{ .Values.kyverno.provenance.type | quote }}
+              attestors:
+                - count: 1
+                  entries:
+                    - keyless:
+                        issuer: {{ .Values.kyverno.keyless.issuer | quote }}
+                        subjectRegExp: {{ .Values.kyverno.keyless.subjectRegExp | quote }}
+                        rekor:
+                          url: {{ .Values.kyverno.keyless.rekorUrl | quote }}
+              conditions:
+                - all:
+                    - key: {{ printf "{{ buildDefinition.buildType }}" | squote }}
+                      operator: Equals
+                      value: https://actions.github.io/buildtypes/workflow/v1
+                    - key: {{ printf "{{ regex_match('%s', '{{ runDetails.builder.id }}') }}" .Values.kyverno.provenance.builderIdRegExp | quote }}
+                      operator: Equals
+                      value: true
+                    - key: {{ printf "{{ buildDefinition.externalParameters.workflow.repository }}" | squote }}
+                      operator: Equals
+                      value: {{ .Values.kyverno.provenance.sourceRepository | quote }}
+                    - key: {{ printf "{{ buildDefinition.externalParameters.workflow.path }}" | squote }}
+                      operator: Equals
+                      value: {{ .Values.kyverno.provenance.buildConfigPath | quote }}
+                    - key: {{ printf "{{ buildDefinition.internalParameters.github.event_name }}" | squote }}
+                      operator: Equals
+                      value: {{ .Values.kyverno.provenance.eventName | quote }}
+{{- end }}
+{{- end }}

@@ -12,6 +12,7 @@ The chart OCI artifact is published as `oci://ghcr.io/meigma/k8s-aws-oidc-chart`
 - `ServiceAccount`
 - `Role`
 - `RoleBinding`
+- Optional Kyverno `Policy` for image signature and provenance verification
 - Optional empty state `Secret` for `tailscale.com/ipn/store/kubestore`
 
 This chart does not create a Kubernetes `Service`, `Ingress`, `HPA`,
@@ -55,9 +56,14 @@ helm install oidc-proxy oci://ghcr.io/meigma/k8s-aws-oidc-chart \
   --set tailscale.oauthSecret.name=tailscale-oauth
 ```
 
+Published OCI charts default to the release image digest embedded in the chart
+metadata. Set `image.tag` to override that default with a different tag, or set
+`image.digest` to pin an explicit digest yourself.
+
 ## Key values
 
 - `issuerUrl`: public issuer URL served by the workload
+- `image.*`: bridge image repository, tag override, explicit digest override, and pull policy
 - `tailscale.hostname`: tsnet hostname used for Funnel
 - `tailscale.tag`: Tailscale auth key tag
 - `tailscale.oauthSecret.name`: existing Secret with the OAuth credentials
@@ -66,8 +72,32 @@ helm install oidc-proxy oci://ghcr.io/meigma/k8s-aws-oidc-chart \
 - `serviceAccount.create`: create a dedicated ServiceAccount
 - `serviceAccount.name`: required when `serviceAccount.create=false`
 - `rbac.create`: create the Role and RoleBinding
+- `kyverno.*`: optional namespaced Kyverno policy that verifies image signatures and SLSA provenance
 - `sourceIpAllowlist.enabled`: enable source CIDR gating for public requests
 - `sourceIpAllowlist.cidrs`: CIDR list used when the allowlist is enabled
+
+## Optional Kyverno enforcement
+
+If Kyverno 1.13 or newer is already installed in the cluster, the chart can
+render a namespaced `Policy` that verifies the workload image is:
+
+- keyless-signed by this repository's GitHub release workflow
+- accompanied by SLSA provenance from the same workflow
+- admitted by digest instead of by mutable tag
+
+Enable it like this:
+
+```bash
+helm upgrade --install oidc-proxy oci://ghcr.io/meigma/k8s-aws-oidc-chart \
+  --set issuerUrl=https://oidc.example.ts.net \
+  --set tailscale.hostname=oidc \
+  --set tailscale.tag=tag:oidc-proxy \
+  --set tailscale.oauthSecret.name=tailscale-oauth \
+  --set kyverno.enabled=true
+```
+
+The default mode is `Enforce`. Switch `kyverno.validationFailureAction=Audit`
+first if you want to observe the admission results before enforcing them.
 
 ## Security defaults
 

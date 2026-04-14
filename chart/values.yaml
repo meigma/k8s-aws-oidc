@@ -8,8 +8,8 @@ fullnameOverride: ""
 issuerUrl: ""
 
 # image.repository is the container image repository for the oidc server.
-# image.tag is the container image tag. When empty, Chart.appVersion is used.
-# image.digest is the container image digest. When set, it takes precedence over image.tag.
+# image.tag overrides the embedded release tag/digest default when set explicitly.
+# image.digest overrides both the embedded release digest and image.tag when set.
 # image.pullPolicy is the Kubernetes image pull policy for the container image.
 image:
   repository: ghcr.io/meigma/k8s-aws-oidc
@@ -92,6 +92,34 @@ affinity: {}
 
 # topologySpreadConstraints configures pod topology spread constraints.
 topologySpreadConstraints: []
+
+# kyverno.enabled renders an optional Kyverno Policy that verifies this chart's image signature and provenance.
+# kyverno.validationFailureAction controls whether Kyverno audits or enforces admission failures.
+# kyverno.webhookTimeoutSeconds controls how long the admission webhook may spend verifying signatures and attestations.
+# kyverno.verifyDigest requires digest-pinned image references.
+# kyverno.mutateDigest controls whether Kyverno rewrites matching tags to digests before validation.
+# kyverno.imageReferences scopes the policy to matching image references. By default it matches the chart image repository.
+# kyverno.keyless.* configures the trusted keyless signer identity for both signatures and provenance attestations.
+# kyverno.provenance.enabled controls whether the policy also requires SLSA provenance attestations.
+# kyverno.provenance.* conditions pin the expected GitHub release workflow and repository metadata.
+kyverno:
+  enabled: false
+  validationFailureAction: Enforce
+  webhookTimeoutSeconds: 30
+  verifyDigest: true
+  mutateDigest: false
+  imageReferences: []
+  keyless:
+    issuer: https://token.actions.githubusercontent.com
+    subjectRegExp: ^https://github\.com/meigma/k8s-aws-oidc/\.github/workflows/reusable-release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$
+    rekorUrl: https://rekor.sigstore.dev
+  provenance:
+    enabled: true
+    type: https://slsa.dev/provenance/v1
+    builderIdRegExp: ^https://github\.com/meigma/k8s-aws-oidc/\.github/workflows/reusable-release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$
+    sourceRepository: https://github.com/meigma/k8s-aws-oidc
+    buildConfigPath: .github/workflows/release.yml
+    eventName: push
 
 # durations.jwksCacheTtl overrides JWKS_CACHE_TTL.
 # durations.jwksCacheMaxAgeHeader overrides JWKS_CACHE_MAX_AGE_HEADER.
