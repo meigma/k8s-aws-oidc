@@ -5,11 +5,12 @@ package tsrunner
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 
+	"github.com/meigma/k8s-aws-oidc/internal/logx"
+	"github.com/meigma/k8s-aws-oidc/internal/metrics"
 	"golang.org/x/oauth2/clientcredentials"
 	//nolint:staticcheck // SA1019: tailscale.com/client/tailscale is bundled with tsnet (already a transitive dep) and the v2 client lives in a separate module. Isolated behind AuthKeyMinter so a future swap is one file.
 	"tailscale.com/client/tailscale"
@@ -30,6 +31,7 @@ type OAuthMinter struct {
 	Tags         []string
 	BaseURL      string
 	Logger       *slog.Logger
+	Metrics      *metrics.Metrics
 }
 
 // ackUnstableOnce sets the unlock flag on the deprecated client/tailscale
@@ -43,14 +45,55 @@ var ackUnstableOnce sync.Once
 
 const defaultTSAPIBaseURL = "https://api.tailscale.com"
 
+type mintErrorKind string
+
+const (
+	mintErrMissingCredentials mintErrorKind = "missing_client_credentials"
+	mintErrMissingTags        mintErrorKind = "missing_tags"
+	mintErrCreateKey          mintErrorKind = "create_auth_key_failed"
+)
+
+type mintError struct {
+	kind mintErrorKind
+	err  error
+}
+
+func (e *mintError) Error() string {
+	switch e.kind {
+	case mintErrMissingCredentials:
+		return "oauth minter: client id and secret required"
+	case mintErrMissingTags:
+		return "oauth minter: at least one tag required"
+	case mintErrCreateKey:
+		return fmt.Sprintf("create auth key: %v", e.err)
+	default:
+		if e.err != nil {
+			return e.err.Error()
+		}
+		return "mint auth key failed"
+	}
+}
+
+func (e *mintError) Unwrap() error { return e.err }
+
 // Mint creates a single fresh ephemeral, preauthorized, tagged auth key and
 // returns it. Errors are returned as-is for the runner to decide on backoff.
 func (m *OAuthMinter) Mint(ctx context.Context) (string, error) {
 	if m.ClientID == "" || m.ClientSecret == "" {
-		return "", errors.New("oauth minter: client id and secret required")
+		err := &mintError{kind: mintErrMissingCredentials}
+		if m.Metrics != nil {
+			m.Metrics.RecordAuthKeyMint(metricsFailure, mintErrorKindOf(err))
+		}
+		logMintFailure(ctx, m.Logger, err)
+		return "", err
 	}
 	if len(m.Tags) == 0 {
-		return "", errors.New("oauth minter: at least one tag required")
+		err := &mintError{kind: mintErrMissingTags}
+		if m.Metrics != nil {
+			m.Metrics.RecordAuthKeyMint(metricsFailure, mintErrorKindOf(err))
+		}
+		logMintFailure(ctx, m.Logger, err)
+		return "", err
 	}
 
 	logger := m.Logger
@@ -89,8 +132,19 @@ func (m *OAuthMinter) Mint(ctx context.Context) (string, error) {
 
 	key, _, err := c.CreateKey(ctx, caps)
 	if err != nil {
-		return "", fmt.Errorf("create auth key: %w", err)
+		mintErr := &mintError{kind: mintErrCreateKey, err: err}
+		if m.Metrics != nil {
+			m.Metrics.RecordAuthKeyMint(metricsFailure, mintErrorKindOf(mintErr))
+		}
+		logMintFailure(ctx, logger, mintErr)
+		return "", mintErr
 	}
-	logger.InfoContext(ctx, "minted ephemeral auth key", "tags", m.Tags)
+	if m.Metrics != nil {
+		m.Metrics.RecordAuthKeyMint(metricsSuccess, "")
+	}
+	logx.Info(ctx, logger, "tailscale_auth", "auth_key_mint_success", "minted auth key",
+		slog.Any("tags", append([]string(nil), m.Tags...)),
+		slog.Int("tag_count", len(m.Tags)),
+	)
 	return key, nil
 }

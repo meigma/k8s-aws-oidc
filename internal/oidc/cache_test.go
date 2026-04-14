@@ -1,12 +1,20 @@
 package oidc
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/meigma/k8s-aws-oidc/internal/metrics"
 )
 
 type fakeFetcher struct {
@@ -52,7 +60,7 @@ func TestCache_Prime_Success(t *testing.T) {
 	f := &fakeFetcher{}
 	f.setBody(mustValidJWKS(t, "k1"))
 
-	c := NewCache(f, time.Minute, 60*time.Second, nil)
+	c := NewCache(f, time.Minute, 60*time.Second, nil, nil)
 	if c.Ready() {
 		t.Fatal("Ready before Prime")
 	}
@@ -76,7 +84,7 @@ func TestCache_CurrentBoundsFreshnessByAge(t *testing.T) {
 	f.setBody(mustValidJWKS(t, "k1"))
 
 	now := time.Unix(1_700_000_000, 0)
-	c := NewCache(f, 20*time.Second, 60*time.Second, nil)
+	c := NewCache(f, 20*time.Second, 60*time.Second, nil, nil)
 	c.now = func() time.Time { return now }
 
 	if err := c.Prime(context.Background()); err != nil {
@@ -94,7 +102,7 @@ func TestCache_Prime_Failure(t *testing.T) {
 	f := &fakeFetcher{}
 	f.setErr(errors.New("boom"))
 
-	c := NewCache(f, time.Minute, 60*time.Second, nil)
+	c := NewCache(f, time.Minute, 60*time.Second, nil, nil)
 	err := c.Prime(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
@@ -108,7 +116,7 @@ func TestCache_Run_RefreshUpdates(t *testing.T) {
 	f := &fakeFetcher{}
 	f.setBody(mustValidJWKS(t, "k1"))
 
-	c := NewCache(f, 20*time.Millisecond, 60*time.Second, nil)
+	c := NewCache(f, 20*time.Millisecond, 60*time.Second, nil, nil)
 	if err := c.Prime(context.Background()); err != nil {
 		t.Fatalf("Prime: %v", err)
 	}
@@ -144,7 +152,7 @@ func TestCache_Run_RefreshFailureRetainsStale(t *testing.T) {
 	f := &fakeFetcher{}
 	f.setBody(mustValidJWKS(t, "k1"))
 
-	c := NewCache(f, 20*time.Millisecond, 60*time.Second, nil)
+	c := NewCache(f, 20*time.Millisecond, 60*time.Second, nil, nil)
 	if err := c.Prime(context.Background()); err != nil {
 		t.Fatalf("Prime: %v", err)
 	}
@@ -175,7 +183,7 @@ func TestCache_ExpiresAfterBoundedStaleWindow(t *testing.T) {
 	f.setBody(mustValidJWKS(t, "k1"))
 
 	now := time.Unix(1_700_000_000, 0)
-	c := NewCache(f, 20*time.Second, 60*time.Second, nil)
+	c := NewCache(f, 20*time.Second, 60*time.Second, nil, nil)
 	c.now = func() time.Time { return now }
 
 	if err := c.Prime(context.Background()); err != nil {
@@ -199,7 +207,7 @@ func TestCache_ConcurrentReadDuringRefresh(t *testing.T) {
 	f := &fakeFetcher{}
 	f.setBody(mustValidJWKS(t, "k1"))
 
-	c := NewCache(f, 5*time.Millisecond, 60*time.Second, nil)
+	c := NewCache(f, 5*time.Millisecond, 60*time.Second, nil, nil)
 	if err := c.Prime(context.Background()); err != nil {
 		t.Fatalf("Prime: %v", err)
 	}
@@ -225,7 +233,7 @@ func TestCache_Run_ExitsOnContextCancel(t *testing.T) {
 	f := &fakeFetcher{}
 	f.setBody(mustValidJWKS(t, "k1"))
 
-	c := NewCache(f, 50*time.Millisecond, 60*time.Second, nil)
+	c := NewCache(f, 50*time.Millisecond, 60*time.Second, nil, nil)
 	if err := c.Prime(context.Background()); err != nil {
 		t.Fatalf("Prime: %v", err)
 	}
@@ -243,4 +251,127 @@ func TestCache_Run_ExitsOnContextCancel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Run did not exit within 1s of cancel")
 	}
+}
+
+func TestCache_LogsLifecycleEvents(t *testing.T) {
+	f := &fakeFetcher{}
+	f.setBody(mustValidJWKS(t, "k2"))
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	recorder := metrics.New(60*time.Second + 20*time.Millisecond)
+	c := NewCache(f, 20*time.Millisecond, 60*time.Second, logger, recorder)
+
+	if err := c.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	f.setErr(errors.New("supersecret-do-not-log"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	c.Run(ctx)
+
+	records := decodeCacheJSONLogs(t, &buf)
+	events := eventSet(records)
+	for _, want := range []string{
+		"jwks_prime_success",
+		"jwks_refresh_failure",
+		"jwks_serving_stale",
+	} {
+		if _, ok := events[want]; !ok {
+			t.Fatalf("missing event %q in %v", want, events)
+		}
+	}
+	prime := events["jwks_prime_success"]
+	if got := int(prime["kid_count"].(float64)); got != 1 {
+		t.Fatalf("kid_count = %d", got)
+	}
+	if strings.Contains(buf.String(), "supersecret-do-not-log") {
+		t.Fatal("log buffer contains raw fetch error")
+	}
+	if strings.Contains(buf.String(), `"n":"`) {
+		t.Fatal("log buffer contains jwks modulus")
+	}
+	metricsBody := scrapeCacheMetrics(t, recorder)
+	for _, want := range []string{
+		`oidc_proxy_jwks_prime_total{result="success"} 1`,
+		`oidc_proxy_jwks_refresh_total{error_kind="fetch_failed",result="failure"}`,
+		`oidc_proxy_jwks_serving_stale_total{error_kind="fetch_failed"}`,
+		"oidc_proxy_jwks_ready 1",
+		"oidc_proxy_jwks_kid_count 1",
+	} {
+		if !strings.Contains(metricsBody, want) {
+			t.Fatalf("metrics body missing %q\n%s", want, metricsBody)
+		}
+	}
+}
+
+func TestCache_PrimeFailure_LogIsSanitized(t *testing.T) {
+	f := &fakeFetcher{}
+	f.setErr(errors.New("Bearer very-secret-token"))
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	recorder := metrics.New(61 * time.Second)
+	c := NewCache(f, time.Minute, 60*time.Second, logger, recorder)
+
+	if err := c.Prime(context.Background()); err == nil {
+		t.Fatal("expected prime error")
+	}
+
+	records := decodeCacheJSONLogs(t, &buf)
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	record := records[0]
+	if got := record["event"]; got != "jwks_prime_failure" {
+		t.Fatalf("event = %v", got)
+	}
+	if strings.Contains(buf.String(), "very-secret-token") {
+		t.Fatal("prime failure log contains secret")
+	}
+	metricsBody := scrapeCacheMetrics(t, recorder)
+	if !strings.Contains(metricsBody, `oidc_proxy_jwks_prime_total{result="failure"} 1`) {
+		t.Fatalf("metrics body missing prime failure counter\n%s", metricsBody)
+	}
+	if strings.Contains(metricsBody, "very-secret-token") {
+		t.Fatal("metrics body contains secret")
+	}
+}
+
+func decodeCacheJSONLogs(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	out := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("unmarshal log: %v", err)
+		}
+		out = append(out, record)
+	}
+	return out
+}
+
+func eventSet(records []map[string]any) map[string]map[string]any {
+	events := make(map[string]map[string]any, len(records))
+	for _, record := range records {
+		event, _ := record["event"].(string)
+		events[event] = record
+	}
+	return events
+}
+
+func scrapeCacheMetrics(t *testing.T, recorder *metrics.Metrics) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rr := httptest.NewRecorder()
+	recorder.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("metrics scrape status = %d", rr.Code)
+	}
+	return rr.Body.String()
 }

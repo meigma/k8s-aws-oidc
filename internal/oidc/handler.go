@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/meigma/k8s-aws-oidc/internal/netx"
 )
 
 // JWKSProvider exposes the current cached JWKS bytes and a Cache-Control
@@ -21,6 +23,7 @@ type Handler struct {
 	JWKS            JWKSProvider
 	PublicReady     func() bool
 	Logger          *slog.Logger
+	MetricsHandler  http.Handler
 }
 
 // NewHandler builds a Handler. issuer is rendered into the discovery doc
@@ -65,6 +68,9 @@ func (h *Handler) ServeMux() *http.ServeMux {
 func (h *Handler) HealthMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.handleHealth)
+	if h.MetricsHandler != nil {
+		mux.Handle("GET /metrics", h.MetricsHandler)
+	}
 	return mux
 }
 
@@ -75,9 +81,10 @@ func (h *Handler) handleDiscovery(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(h.Discovery)
 }
 
-func (h *Handler) handleJWKS(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	body, cc := h.JWKS.Current()
 	if !h.JWKS.Ready() || len(body) == 0 {
+		netx.MarkJWKSNotReady(r.Context())
 		w.Header().Set("Cache-Control", "no-store")
 		http.Error(w, "jwks not ready", http.StatusServiceUnavailable)
 		return

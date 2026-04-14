@@ -10,6 +10,8 @@ import (
 	"slices"
 	"sync/atomic"
 	"time"
+
+	"github.com/meigma/k8s-aws-oidc/internal/metrics"
 )
 
 // BackendStateRunning is the BackendState string reported by tsnet's
@@ -107,6 +109,7 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	PollInterval    time.Duration
 	Logger          *slog.Logger
+	Metrics         *metrics.Metrics
 	// SetPublicReady is called when the public Funnel listener becomes able to
 	// serve requests and again when it is no longer serving. It is intended for
 	// wiring readiness probes to the actual public trust surface.
@@ -152,6 +155,7 @@ func Run(ctx context.Context, cfg Config, factory ServerFactory, minter AuthKeyM
 	logger := cfg.Logger
 
 	var server tsnetServer
+	var lastState string
 	defer func() {
 		if server != nil {
 			_ = server.Close()
@@ -174,8 +178,18 @@ func Run(ctx context.Context, cfg Config, factory ServerFactory, minter AuthKeyM
 		if ctx.Err() != nil {
 			return nil
 		}
+		if state != "" && state != lastState {
+			logStateChange(ctx, logger, state)
+			if cfg.Metrics != nil {
+				cfg.Metrics.RecordTSNetStateTransition(state)
+			}
+			lastState = state
+		}
 		switch decideNext(state, startErr) {
 		case actionServe:
+			if cfg.Metrics != nil {
+				cfg.Metrics.RecordTSNetStart(metricsSuccess, "")
+			}
 			fatal := handleServe(ctx, cfg, server, &verified, &backoff)
 			_ = server.Close()
 			server = nil
@@ -186,7 +200,10 @@ func Run(ctx context.Context, cfg Config, factory ServerFactory, minter AuthKeyM
 			server = handleReauth(ctx, logger, factory, minter, server, &backoff)
 			verified = false
 		case actionRetry:
-			logger.ErrorContext(ctx, "tsnet start failed", "error", errString(startErr), "state", state)
+			if cfg.Metrics != nil {
+				cfg.Metrics.RecordTSNetStart(metricsFailure, runnerErrorKind(startErr))
+			}
+			logStartFailure(ctx, logger, state, startErr)
 			_ = backoff.sleep(ctx)
 			_ = server.Close()
 			server = nil
@@ -214,7 +231,10 @@ func handleServe(
 	if errors.Is(err, ErrIssuerHostMismatch) {
 		return err
 	}
-	cfg.Logger.ErrorContext(ctx, "serve loop ended", "error", err.Error())
+	if cfg.Metrics != nil {
+		cfg.Metrics.RecordPublicListenerRestart("serve_failure")
+	}
+	logListenerFailure(ctx, cfg.Logger, err)
 	_ = backoff.sleep(ctx)
 	return nil
 }
@@ -224,7 +244,7 @@ func handleServe(
 // failure. Other serve errors are returned to the outer loop for backoff.
 func runServeStep(ctx context.Context, cfg Config, server tsnetServer, verified *bool) error {
 	if !*verified {
-		if err := verifyIssuerHost(ctx, server, cfg.ExpectedIssuerHost); err != nil {
+		if err := verifyIssuerHost(ctx, cfg.Logger, cfg.Metrics, server, cfg.ExpectedIssuerHost); err != nil {
 			return err
 		}
 		*verified = true
@@ -235,7 +255,13 @@ func runServeStep(ctx context.Context, cfg Config, server tsnetServer, verified 
 // verifyIssuerHost reads the tsnet node's CertDomains and checks that the
 // expected host is present. An empty expectedHost disables the check (used
 // by tests that don't care about the FQDN match).
-func verifyIssuerHost(ctx context.Context, server tsnetServer, expectedHost string) error {
+func verifyIssuerHost(
+	ctx context.Context,
+	logger *slog.Logger,
+	recorder *metrics.Metrics,
+	server tsnetServer,
+	expectedHost string,
+) error {
 	if expectedHost == "" {
 		return nil
 	}
@@ -244,8 +270,16 @@ func verifyIssuerHost(ctx context.Context, server tsnetServer, expectedHost stri
 		return fmt.Errorf("read cert domains: %w", err)
 	}
 	if slices.Contains(domains, expectedHost) {
+		if recorder != nil {
+			recorder.RecordIssuerHostVerification(metricsSuccess)
+		}
+		logIssuerVerified(ctx, logger, expectedHost, domains)
 		return nil
 	}
+	if recorder != nil {
+		recorder.RecordIssuerHostVerification(metricsFailure)
+	}
+	logIssuerMismatch(ctx, logger, expectedHost, domains)
 	return fmt.Errorf("%w: expected %q, tsnet cert domains %v", ErrIssuerHostMismatch, expectedHost, domains)
 }
 
@@ -327,10 +361,8 @@ func handleReauth(
 	server tsnetServer,
 	backoff *backoffState,
 ) tsnetServer {
-	logger.InfoContext(ctx, "tsnet needs login; minting fresh auth key")
 	key, mintErr := minter.Mint(ctx)
 	if mintErr != nil {
-		logger.ErrorContext(ctx, "auth key mint failed", "error", mintErr.Error())
 		_ = backoff.sleep(ctx)
 		return server
 	}
@@ -339,13 +371,6 @@ func handleReauth(
 	fresh := factory()
 	fresh.SetAuthKey(key)
 	return fresh
-}
-
-func errString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 // serveOnce wires up the [http.Server] on a Funnel listener and blocks until
@@ -389,7 +414,11 @@ func serveOnce(ctx context.Context, cfg Config, server tsnetServer) error {
 		<-serveErr
 		return nil
 	case <-flipped:
-		logger.WarnContext(ctx, "tsnet backend flipped to NeedsLogin; restarting")
+		logStateChange(ctx, logger, BackendStateNeedsLogin)
+		if cfg.Metrics != nil {
+			cfg.Metrics.RecordPublicListenerRestart("needs_login")
+		}
+		logListenerRestart(ctx, logger, "needs_login")
 		cfg.SetPublicReady(false)
 		shutdown(ctx, srv, cfg.ShutdownTimeout, logger)
 		<-serveErr
@@ -424,7 +453,7 @@ func watchForLoginNeeded(
 			case <-t.C:
 				state, err := server.BackendState(ctx)
 				if err != nil {
-					logger.WarnContext(ctx, "backend state poll failed", "error", err.Error())
+					logStatePollFailure(ctx, logger, err)
 					continue
 				}
 				if state == BackendStateNeedsLogin {
@@ -440,7 +469,7 @@ func shutdown(ctx context.Context, srv *http.Server, timeout time.Duration, logg
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.WarnContext(ctx, "http shutdown error", "error", err.Error())
+		logHTTPShutdownFailure(ctx, logger, err)
 	}
 }
 

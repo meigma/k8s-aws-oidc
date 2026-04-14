@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/meigma/k8s-aws-oidc/internal/logx"
 )
 
 // Config is the validated runtime configuration.
@@ -32,6 +34,7 @@ type Config struct {
 	SourceIPAllowlistCIDRs   []netip.Prefix
 
 	FunnelAddr           string
+	LogFormat            logx.Format
 	LogLevel             slog.Level
 	StartupFetchTimeout  time.Duration
 	TSStartTimeout       time.Duration
@@ -99,6 +102,9 @@ func Load() (*Config, error) {
 	}
 
 	if cfg.LogLevel, err = parseLogLevel(envDefault("LOG_LEVEL", "info")); err != nil {
+		return nil, err
+	}
+	if cfg.LogFormat, err = logx.ParseFormat(envDefault("LOG_FORMAT", string(logx.FormatJSON))); err != nil {
 		return nil, err
 	}
 

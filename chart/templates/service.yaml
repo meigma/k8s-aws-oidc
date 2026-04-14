@@ -1,0 +1,31 @@
+{{- if and .Values.metrics.enabled .Values.metrics.service.enabled }}
+{{- $annotations := dict
+  "prometheus.io/scrape" "true"
+  "prometheus.io/path" .Values.metrics.path
+  "prometheus.io/port" (printf "%v" .Values.metrics.service.port)
+  "prometheus.io/scheme" "http"
+-}}
+{{- with .Values.metrics.service.annotations }}
+{{- $annotations = merge $annotations . }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k8s-aws-oidc-chart.fullname" . }}
+  labels:
+    {{- include "k8s-aws-oidc-chart.labels" . | nindent 4 }}
+    {{- with .Values.metrics.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  annotations:
+    {{- toYaml $annotations | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "k8s-aws-oidc-chart.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.service.port }}
+      targetPort: health
+      protocol: TCP
+{{- end }}

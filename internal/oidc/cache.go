@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/meigma/k8s-aws-oidc/internal/logx"
+	"github.com/meigma/k8s-aws-oidc/internal/metrics"
 )
 
 // Cache holds the most recently fetched, validated, marshaled JWKS bytes
@@ -18,6 +21,7 @@ type Cache struct {
 	ttl     time.Duration
 	maxAge  time.Duration
 	logger  *slog.Logger
+	metrics *metrics.Metrics
 	now     func() time.Time
 
 	mu        sync.RWMutex
@@ -29,7 +33,7 @@ type Cache struct {
 // NewCache constructs a Cache. ttl controls how often Run refreshes; maxAge
 // is the value placed in the Cache-Control: public, max-age=N header that
 // Current returns alongside the body.
-func NewCache(f Fetcher, ttl, maxAge time.Duration, logger *slog.Logger) *Cache {
+func NewCache(f Fetcher, ttl, maxAge time.Duration, logger *slog.Logger, recorder *metrics.Metrics) *Cache {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -38,6 +42,7 @@ func NewCache(f Fetcher, ttl, maxAge time.Duration, logger *slog.Logger) *Cache 
 		ttl:     ttl,
 		maxAge:  maxAge,
 		logger:  logger,
+		metrics: recorder,
 		now:     time.Now,
 	}
 }
@@ -48,13 +53,28 @@ func NewCache(f Fetcher, ttl, maxAge time.Duration, logger *slog.Logger) *Cache 
 func (c *Cache) Prime(ctx context.Context) error {
 	jwks, err := c.fetcher.Fetch(ctx)
 	if err != nil {
+		if c.metrics != nil {
+			c.metrics.RecordJWKSPrimeFailure()
+		}
+		logJWKSFailure(ctx, c.logger, slog.LevelError, "jwks_prime_failure", err)
 		return err
 	}
 	body, err := jwks.Marshal()
 	if err != nil {
+		if c.metrics != nil {
+			c.metrics.RecordJWKSPrimeFailure()
+		}
+		logx.Error(ctx, c.logger, "jwks_cache", "jwks_prime_failure", "jwks cache update failed",
+			slog.String("error_kind", "marshal_failed"),
+			slog.String("error", "marshal jwks failed"),
+		)
 		return err
 	}
 	c.store(body)
+	if c.metrics != nil {
+		c.metrics.RecordJWKSPrimeSuccess(len(jwks.Keys))
+	}
+	logJWKSSuccess(ctx, c.logger, "jwks_prime_success", jwks)
 	return nil
 }
 
@@ -69,7 +89,19 @@ func (c *Cache) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			if err := c.refresh(ctx); err != nil {
-				c.logger.WarnContext(ctx, "jwks refresh failed; serving stale", "error", err.Error())
+				errorKind := jwksErrorKind(err)
+				if c.metrics != nil {
+					c.metrics.RecordJWKSRefreshFailure(errorKind)
+				}
+				logJWKSFailure(ctx, c.logger, slog.LevelWarn, "jwks_refresh_failure", err)
+				if ok, remaining := c.remainingFreshness(); ok {
+					if c.metrics != nil {
+						c.metrics.RecordJWKSServingStale(errorKind)
+					}
+					logx.Warn(ctx, c.logger, "jwks_cache", "jwks_serving_stale", "serving stale jwks",
+						slog.Int64("stale_remaining_seconds", int64(remaining.Seconds())),
+					)
+				}
 			}
 		}
 	}
@@ -82,9 +114,20 @@ func (c *Cache) refresh(ctx context.Context) error {
 	}
 	body, err := jwks.Marshal()
 	if err != nil {
+		if c.metrics != nil {
+			c.metrics.RecordJWKSRefreshFailure("marshal_failed")
+		}
+		logx.Warn(ctx, c.logger, "jwks_cache", "jwks_refresh_failure", "jwks cache update failed",
+			slog.String("error_kind", "marshal_failed"),
+			slog.String("error", "marshal jwks failed"),
+		)
 		return err
 	}
 	c.store(body)
+	if c.metrics != nil {
+		c.metrics.RecordJWKSRefreshSuccess(len(jwks.Keys))
+	}
+	logJWKSSuccess(ctx, c.logger, "jwks_refresh_success", jwks)
 	return nil
 }
 
@@ -114,6 +157,12 @@ func (c *Cache) Ready() bool {
 	defer c.mu.RUnlock()
 	ready, _ := c.freshnessLocked()
 	return ready
+}
+
+func (c *Cache) remainingFreshness() (bool, time.Duration) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.freshnessLocked()
 }
 
 // freshnessLocked reports whether the current cache entry is still usable and,

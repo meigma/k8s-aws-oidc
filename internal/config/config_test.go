@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/meigma/k8s-aws-oidc/internal/logx"
 )
 
 func setProdEnv(t *testing.T) {
@@ -47,6 +49,9 @@ func TestLoad_HappyPath_Defaults(t *testing.T) {
 	if cfg.LogLevel != slog.LevelInfo {
 		t.Errorf("LogLevel default = %v", cfg.LogLevel)
 	}
+	if cfg.LogFormat != logx.FormatJSON {
+		t.Errorf("LogFormat default = %q", cfg.LogFormat)
+	}
 	if cfg.SourceIPAllowlistEnabled {
 		t.Errorf("SourceIPAllowlistEnabled default = true")
 	}
@@ -64,6 +69,7 @@ func TestLoad_AllExplicit(t *testing.T) {
 	t.Setenv("FUNNEL_ADDR", ":8443")
 	t.Setenv("HEALTH_ADDR", ":18080")
 	t.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("LOG_FORMAT", "text")
 	t.Setenv("SOURCE_IP_ALLOWLIST_ENABLED", "true")
 	t.Setenv("SOURCE_IP_ALLOWLIST_CIDRS", "10.0.0.0/8, 192.168.0.0/16")
 
@@ -80,6 +86,9 @@ func TestLoad_AllExplicit(t *testing.T) {
 	}
 	if cfg.LogLevel != slog.LevelDebug {
 		t.Errorf("LogLevel = %v", cfg.LogLevel)
+	}
+	if cfg.LogFormat != logx.FormatText {
+		t.Errorf("LogFormat = %q", cfg.LogFormat)
 	}
 	if !cfg.SourceIPAllowlistEnabled {
 		t.Errorf("SourceIPAllowlistEnabled = false")
@@ -252,5 +261,18 @@ func TestLoad_RejectsNonPositiveDurations(t *testing.T) {
 				t.Errorf("error %q does not mention %s", err.Error(), tc.envVar)
 			}
 		})
+	}
+}
+
+func TestLoad_InvalidLogFormat(t *testing.T) {
+	setProdEnv(t)
+	t.Setenv("LOG_FORMAT", "pretty")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for invalid log format")
+	}
+	if !strings.Contains(err.Error(), "LOG_FORMAT") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

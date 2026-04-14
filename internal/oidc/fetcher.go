@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -29,6 +28,58 @@ const (
 	fetchExpectContinue  = 1 * time.Second
 	fetchMaxIdleConns    = 4
 )
+
+type fetchErrorKind string
+
+const (
+	fetchErrBuildRequest fetchErrorKind = "request_build"
+	fetchErrUpstream     fetchErrorKind = "upstream_request"
+	fetchErrUpstreamCode fetchErrorKind = "upstream_status"
+	fetchErrReadBody     fetchErrorKind = "body_read"
+	fetchErrBodyTooLarge fetchErrorKind = "body_too_large"
+	fetchErrJWKSInvalid  fetchErrorKind = "jwks_invalid"
+	fetchErrTokenRead    fetchErrorKind = "token_read"
+	fetchErrTokenEmpty   fetchErrorKind = "token_empty"
+)
+
+type fetchError struct {
+	kind          fetchErrorKind
+	url           string
+	statusCode    int
+	bodySizeBytes int
+	err           error
+}
+
+func (e *fetchError) Error() string {
+	switch e.kind {
+	case fetchErrBuildRequest:
+		return fmt.Sprintf("build request: %v", e.err)
+	case fetchErrUpstream:
+		return fmt.Sprintf("fetch %s: %v", e.url, e.err)
+	case fetchErrUpstreamCode:
+		return fmt.Sprintf("fetch %s: status %d", e.url, e.statusCode)
+	case fetchErrReadBody:
+		return fmt.Sprintf("read body: %v", e.err)
+	case fetchErrBodyTooLarge:
+		return fmt.Sprintf("response body exceeds %d bytes", e.bodySizeBytes)
+	case fetchErrJWKSInvalid:
+		if e.err == nil {
+			return "jwks validation failed"
+		}
+		return e.err.Error()
+	case fetchErrTokenRead:
+		return fmt.Sprintf("read token %q: %v", e.url, e.err)
+	case fetchErrTokenEmpty:
+		return "token file is empty"
+	default:
+		if e.err != nil {
+			return e.err.Error()
+		}
+		return "fetch failed"
+	}
+}
+
+func (e *fetchError) Unwrap() error { return e.err }
 
 // Fetcher fetches and validates a JWKS from an upstream source.
 type Fetcher interface {
@@ -94,31 +145,31 @@ func NewHTTPFetcher(url, tokenPath, caPath string, logger *slog.Logger) (*HTTPFe
 func (f *HTTPFetcher) Fetch(ctx context.Context) (*JWKS, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return nil, &fetchError{kind: fetchErrBuildRequest, url: f.url, err: err}
 	}
 	req.Header.Set("Accept", "application/jwk-set+json, application/json")
 
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %w", f.url, err)
+		return nil, &fetchError{kind: fetchErrUpstream, url: f.url, err: err}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch %s: status %d", f.url, resp.StatusCode)
+		return nil, &fetchError{kind: fetchErrUpstreamCode, url: f.url, statusCode: resp.StatusCode}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxJWKSBodyBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
+		return nil, &fetchError{kind: fetchErrReadBody, url: f.url, err: err}
 	}
 	if len(body) > MaxJWKSBodyBytes {
-		return nil, fmt.Errorf("response body exceeds %d bytes", MaxJWKSBodyBytes)
+		return nil, &fetchError{kind: fetchErrBodyTooLarge, url: f.url, bodySizeBytes: len(body)}
 	}
 
 	jwks, err := ParseAndValidate(body)
 	if err != nil {
-		return nil, err
+		return nil, &fetchError{kind: fetchErrJWKSInvalid, url: f.url, err: err}
 	}
 	return jwks, nil
 }
@@ -138,11 +189,11 @@ func (t *bearerTokenTransport) RoundTrip(req *http.Request) (*http.Response, err
 	// #nosec G304,G703 -- path is fixed in production and parameterized here only for tests/composition
 	tok, err := os.ReadFile(t.tokenPath)
 	if err != nil {
-		return nil, fmt.Errorf("read token %q: %w", t.tokenPath, err)
+		return nil, &fetchError{kind: fetchErrTokenRead, url: t.tokenPath, err: err}
 	}
 	tok = trimTrailingNewline(tok)
 	if len(tok) == 0 {
-		return nil, errors.New("token file is empty")
+		return nil, &fetchError{kind: fetchErrTokenEmpty, url: t.tokenPath}
 	}
 	clone := req.Clone(req.Context())
 	clone.Header.Set("Authorization", "Bearer "+string(tok))

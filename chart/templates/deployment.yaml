@@ -84,6 +84,8 @@ spec:
               value: {{ .Values.funnelAddr | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
             - name: JWKS_CACHE_TTL
               value: {{ .Values.durations.jwksCacheTtl | quote }}
             - name: JWKS_CACHE_MAX_AGE_HEADER

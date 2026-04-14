@@ -1,0 +1,24 @@
+{{- if and .Values.metrics.enabled .Values.metrics.service.enabled .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "k8s-aws-oidc-chart.fullname" . }}
+  labels:
+    {{- include "k8s-aws-oidc-chart.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "k8s-aws-oidc-chart.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: metrics
+      path: {{ .Values.metrics.path | quote }}
+      scheme: http
+      interval: {{ .Values.metrics.serviceMonitor.interval | quote }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout | quote }}
+{{- end }}

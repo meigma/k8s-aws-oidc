@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 
+	"github.com/meigma/k8s-aws-oidc/internal/logx"
 	"tailscale.com/ipn/store/kubestore"
 	"tailscale.com/tsnet"
 	"tailscale.com/types/logger"
@@ -130,7 +131,9 @@ func slogToTailscaleLogf(l *slog.Logger) logger.Logf {
 		return logger.Discard
 	}
 	return func(format string, args ...any) {
-		l.Debug(fmt.Sprintf(format, args...), slog.String("source", "tsnet"))
+		logx.Debug(context.Background(), l, "tsnet", "tsnet_internal", "tsnet internal log",
+			slog.String("message", fmt.Sprintf(format, args...)),
+		)
 	}
 }
 
