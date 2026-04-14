@@ -232,6 +232,89 @@
         "type": "object"
       }
     },
+    "kyverno": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "validationFailureAction": {
+          "type": "string",
+          "enum": [
+            "Audit",
+            "Enforce"
+          ]
+        },
+        "webhookTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "verifyDigest": {
+          "type": "boolean"
+        },
+        "mutateDigest": {
+          "type": "boolean"
+        },
+        "imageReferences": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "keyless": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "issuer": {
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            },
+            "subjectRegExp": {
+              "type": "string",
+              "minLength": 1
+            },
+            "rekorUrl": {
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "minLength": 1
+            },
+            "builderIdRegExp": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sourceRepository": {
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            },
+            "buildConfigPath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "eventName": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
     "durations": {
       "type": "object",
       "additionalProperties": false,

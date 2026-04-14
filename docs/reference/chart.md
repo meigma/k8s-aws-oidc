@@ -10,13 +10,14 @@ This page describes the public Helm chart surface.
 | Value | Purpose |
 |---|---|
 | `issuerUrl` | Public issuer URL the bridge serves and the API server must match. |
-| `image.*` | Bridge image repository, tag, digest, and pull policy. |
+| `image.*` | Bridge image repository, tag override, digest override, and pull policy. |
 | `tailscale.hostname` | Tailscale hostname used by tsnet and Funnel. |
 | `tailscale.tag` | Tailscale tag used when minting auth keys. |
 | `tailscale.oauthSecret.*` | Existing secret that holds the OAuth client credentials. |
 | `tailscale.stateSecret.*` | Secret used for persistent tsnet state. |
 | `serviceAccount.*` | Bridge service-account creation or reuse. |
 | `rbac.create` | Whether to create the role and role binding for the state secret. |
+| `kyverno.*` | Optional namespaced Kyverno policy for image signature and provenance enforcement. |
 | `sourceIpAllowlist.*` | Optional public request CIDR gating. |
 | `durations.*` | Cache and startup timing knobs. |
 
@@ -24,6 +25,7 @@ This page describes the public Helm chart surface.
 
 - one replica only
 - `Recreate` deployment strategy
+- published OCI charts default the workload image to the release digest embedded in chart metadata
 - no `Service`, `Ingress`, or `NetworkPolicy`
 - readiness and startup checks use the internal health listener on `:8080`
 - the pod runs as non-root with a read-only root filesystem
@@ -37,4 +39,4 @@ The chart does not:
 - create AWS IAM resources
 - create the Tailscale OAuth client
 - enable Funnel permissions in the tailnet policy
-
+- install Kyverno itself when `kyverno.enabled=true`

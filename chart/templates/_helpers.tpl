@@ -46,10 +46,19 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- default (printf "%s-state" (include "k8s-aws-oidc-chart.fullname" .)) .Values.tailscale.stateSecret.name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "k8s-aws-oidc-chart.defaultImageDigest" -}}
+{{- $annotations := .Chart.Annotations | default dict -}}
+{{- index $annotations "io.github.meigma/default-image-digest" | default "" -}}
+{{- end -}}
+
 {{- define "k8s-aws-oidc-chart.image" -}}
 {{- if .Values.image.digest -}}
 {{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else if .Values.image.tag -}}
+{{- printf "%s:%s" .Values.image.repository .Values.image.tag -}}
+{{- else if include "k8s-aws-oidc-chart.defaultImageDigest" . -}}
+{{- printf "%s@%s" .Values.image.repository (include "k8s-aws-oidc-chart.defaultImageDigest" .) -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
+{{- printf "%s:%s" .Values.image.repository .Chart.AppVersion -}}
 {{- end -}}
 {{- end -}}

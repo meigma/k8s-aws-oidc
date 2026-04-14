@@ -61,3 +61,10 @@ tasks:
       - 'chart/**/*'
     options:
       cache: true
+
+  chart-render-kyverno:
+    command: "sh -c 'helm template smoke chart/ -f chart/ci-values.yaml --set kyverno.enabled=true --kube-version 1.35.0 >/dev/null'"
+    inputs:
+      - 'chart/**/*'
+    options:
+      cache: true
