@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/meigma/k8s-aws-oidc/compare/v1.1.0...v1.1.1) (2026-06-25)
+
+
+### Bug Fixes
+
+* grant leader-election Lease RBAC so HA pods can elect a leader ([#34](https://github.com/meigma/k8s-aws-oidc/issues/34)) ([3e7c1f9](https://github.com/meigma/k8s-aws-oidc/commit/3e7c1f92627d1c68d136dfd45f08a22b25a7bff6))
+
 ## [1.1.0](https://github.com/meigma/k8s-aws-oidc/compare/v1.0.0...v1.1.0) (2026-06-25)
 
 
