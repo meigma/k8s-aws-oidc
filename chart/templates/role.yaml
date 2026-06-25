@@ -25,15 +25,16 @@ rules:
       - create
       - patch
   {{- if .Values.leaderElection.enabled }}
+  {{- /* The client-go LeaseLock creates the Lease when it is absent and renews it
+  via update. RBAC ignores resourceNames for create, so this rule must not be
+  name-scoped or leader election fails with "cannot create resource leases". */}}
   - apiGroups:
       - coordination.k8s.io
     resources:
       - leases
-    resourceNames:
-      - {{ include "k8s-aws-oidc-chart.leaseName" . }}
     verbs:
       - get
+      - create
       - update
-      - patch
   {{- end }}
 {{- end }}
