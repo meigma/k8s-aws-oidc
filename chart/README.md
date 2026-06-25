@@ -11,8 +11,9 @@ The chart OCI artifact is published as `oci://ghcr.io/meigma/k8s-aws-oidc-chart`
 - `Deployment`
 - Optional internal `Service` for the health endpoints and `/metrics`
 - `ServiceAccount`
-- `Role`
-- `RoleBinding`
+- `Role` and `RoleBinding` granting the ServiceAccount access to the tsnet state
+  `Secret` and to write `Event`s. When `leaderElection.enabled=true` the `Role`
+  also grants `get`, `create`, and `update` on the leader-election `Lease`.
 - Optional `Lease` for leader election
 - Optional `PodDisruptionBudget`
 - Optional `ServiceMonitor` for Prometheus Operator

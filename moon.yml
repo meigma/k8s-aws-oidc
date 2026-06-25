@@ -68,3 +68,11 @@ tasks:
       - 'chart/**/*'
     options:
       cache: true
+
+  chart-test-rbac:
+    command: 'bash hack/chart-rbac-test.sh'
+    inputs:
+      - 'chart/**/*'
+      - 'hack/chart-rbac-test.sh'
+    options:
+      cache: true
