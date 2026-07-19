@@ -4,3 +4,7 @@
 dist/
 tmp/
 /oidc-proxy
+.agents/
+.claude/
+.journal/
+.wt/
