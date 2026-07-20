@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/meigma/k8s-aws-oidc/compare/v1.1.1...v1.1.2) (2026-07-19)
+
+
+### Bug Fixes
+
+* bump Go to 1.26.5 ([#37](https://github.com/meigma/k8s-aws-oidc/issues/37)) ([5a201d8](https://github.com/meigma/k8s-aws-oidc/commit/5a201d8297976d6e7f29ab25b244dde2f9ff0382))
+
 ## [1.1.1](https://github.com/meigma/k8s-aws-oidc/compare/v1.1.0...v1.1.1) (2026-06-25)
 
 

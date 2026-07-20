@@ -5,8 +5,8 @@ description: >-
   Funnel.
 type: application
 kubeVersion: '>=1.33.0-0'
-version: 1.1.1
-appVersion: 1.1.1
+version: 1.1.2
+appVersion: 1.1.2
 home: https://github.com/meigma/k8s-aws-oidc
 sources:
   - https://github.com/meigma/k8s-aws-oidc
